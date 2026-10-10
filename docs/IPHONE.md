@@ -44,6 +44,40 @@ A Bluetooth keyboard works as on the iPad. A mouse works through
 click did not press in-game buttons, while a middle (wheel) click did. A game
 controller has not been made to work at the WoW login screen.
 
+## GPUs without BC textures (A16 and older iPhones)
+
+Every Mac GPU samples the BC ("DXT") compressed texture formats, so macOS games
+create BC textures without asking. On iOS that depends on the GPU: Metal
+reports it per device (`supportsBCTextureCompression`). The iPhone 16 Pro Max
+(A18 Pro) and the M-series iPads have it; the iPhone 15 Plus (A16) and older
+A-series GPUs do not, and there Metal aborted World of Warcraft Classic as soon
+as it created its first BC3 texture.
+
+On such a device the Metal adapter now creates each BC texture in an
+uncompressed format instead (RGBA8, sRGB kept; R8 or RG8 for BC4/BC5; RGBA16
+float for BC6H) and decodes the game's uploads on the CPU: `replaceRegion:`,
+blit copies from a buffer (decoded when the command buffer is committed),
+copies between such textures, texture views and heap textures. The game still
+sees the BC format it asked for, and the device reports BC support to it as a
+Mac would. The log says once `Metal BC fallback on` and, at the first such
+texture, `Metal BC fallback engaged`. Devices with BC support are unchanged:
+nothing is installed there. Details and the routes that are not covered are at
+the top of `translation/Metal/BCTextures.m`.
+
+The cost is memory and loading time. Uncompressed textures take more GPU
+memory than the BC data: 8 times for BC1 and BC6H, 4 times for BC2, BC3 and
+BC7, twice for BC4 and BC5. Games use BC1 and BC3 for most textures, so plan
+on 4 to 8 times the texture memory of the same settings on a Mac or a newer
+device, and on an iPhone with 6 GB or less lower the game's texture
+resolution first. Each upload is decoded once, on the thread that makes it.
+
+`TOLKARA_BC_FALLBACK` sets it (a profile's `environment`, or the development
+launch argument `--guest-environment=TOLKARA_BC_FALLBACK=on`): `auto`, the
+default, engages only without BC support; `on` forces it on a device with BC,
+to test it there; `off` never engages. As of 2026-10-10 the fallback has passed
+the Mac tests (decoders checked against the Mac GPU, every upload route with
+the fallback forced on) but has not yet run on an A16 iPhone.
+
 ## Limits
 
 The launcher's screens were designed for the iPad and are not yet adapted to

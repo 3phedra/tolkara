@@ -108,7 +108,11 @@ Hand-written areas today:
   AIR retargeted by Apple's compiler) and, failing that, pauses the game with a
   message instead of substituting a shader. The Diagnostics menu's **Captured
   shaders** check (`tools/probe_captured_shaders.py`) loads every library a
-  game ever left for translation through the on-device path.
+  game ever left for translation through the on-device path. On a GPU without
+  BC texture sampling (A16 and older iPhones), BC textures are stored
+  uncompressed and the guest's uploads are decoded on the CPU
+  (`BCTextures.m`, `BCDecode.c`; see [IPHONE.md](IPHONE.md)); the guest still
+  sees its BC formats.
 - **CoreAudio / AudioToolbox** on AVFAudio, **Carbon / CoreServices** keyboard
   layout services, **CoreGraphics** display queries, and **Security** (system
   trust roots exported from the builder's own Mac at build time, a keychain

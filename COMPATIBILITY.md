@@ -15,6 +15,16 @@ pull request; say what you tested, on what hardware, with which execution mode
 | Cyberpunk 2077 (GOG, macOS arm64) | 2.3.x (buildId 59052989568257053) | iPad Pro M5, iPadOS 27 | Developer service | Experimental software-memory mode completes all 6,540 initializers, main, GOG initialization, archives, scripts and shader caches, creates the game window, and visibly renders the opening cinematic with a Space-to-continue prompt. | Menu content and gameplay unverified. Early presentation samples are about 5 FPS, then settle near 1 FPS in the cinematic, with long pauses. Manual Space presses reach the adapter queue but have not visibly continued the game; routing 4 GiB pools to software passes the earlier Foundation allocation failure and reaches further loading. Loader and call-wrapper unwind support clears the GOG rich-presence abort on the iPad: the call reports its service error and returns, and loading continues. The merged-main run logs a main-menu presence state; visual menu and gameplay validation remain pending. Tests use a 3600-second watchdog timeout and a two-CPU query cap. See [VM investigation](docs/CYBERPUNK_VM.md) and [software-memory experiment](docs/SOFTWARE_MEMORY.md). | [`cyberpunk-2077`](profiles/cyberpunk-2077) |
 | MegaBonk (Steam, Windows x86-64) | 1.0.69 | iPad Pro M5, iPadOS 27 | Developer service | Visible main menu, imported Steam progress, user-confirmed playable run. Native Steam Cloud pulled three saves, uploaded both saves changed by that run, and passed independent byte-for-byte verification. Final clean-exit Cloud sync passes through an original physical Wine fixture. Saved Developer service mode startup passes after correcting the old Local signing choice. | Physical unplugged regular-library confirmation pending. User reported erratic camera mouse movement; confinement/recentering fix passes UIKit fixtures and physical Wine pointer-lock, exact recentering and release checks; manual camera feel validation pending. A run froze after about 8 minutes when FEX code buffers filled the 256 MiB code pool; the profile now uses 496 MiB (the Developer service caps the arena at 512 MiB) with 128 MiB buffers, long-session confirmation pending. Menus stepping down by themselves stopped with the game's VSync setting on (user-confirmed); no input reached Wine. Natural scrolling user-confirmed. Performance unmeasured. Simulator GPU lacks required D3D capabilities. | [Windows notes](docs/WINDOWS.md) |
 
+## GPUs without BC textures
+
+macOS games use BC ("DXT") compressed textures, which only some iOS GPUs
+sample. On an iPhone 15 Plus (A16), World of Warcraft Classic started, compiled
+its shaders and then was stopped by Metal at its first BC3 texture. Since
+2026-10-10, Tolkara stores BC textures uncompressed on such GPUs and decodes
+them on the CPU, at 2 to 8 times the texture memory (see
+[docs/IPHONE.md](docs/IPHONE.md#gpus-without-bc-textures-a16-and-older-iphones)).
+That fallback is tested on the Mac only; no A16 device result is recorded yet.
+
 ## Runtime diagnostics
 
 On 2026-09-26, `--sparse-memory-probe` passed on the iPad Pro M5 / iPadOS 27.
