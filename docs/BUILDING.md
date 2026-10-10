@@ -23,7 +23,8 @@ page says iPad, read iPhone. [IPHONE.md](IPHONE.md) has what differs.
   sign, and free provisioning profiles expire after seven days.
 - An Apple-silicon iPad. Development and testing so far used an iPad Pro (M5)
   on iPadOS 27. iPhone support is experimental and was tested on an iPhone 16
-  Pro Max with iOS 27.
+  Pro Max with iOS 27. GPUs without BC textures (A16 and older iPhones) need
+  more memory for games' textures; see [IPHONE.md](IPHONE.md).
 - A macOS arm64 application that you own, installed on the Mac.
 
 ## 1. Enable Developer Mode on the iPad
