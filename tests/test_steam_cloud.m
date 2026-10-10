@@ -3,15 +3,25 @@
 #include <CommonCrypto/CommonDigest.h>
 #include <assert.h>
 #include <unistd.h>
+#include <zlib.h>
+#include <libkern/OSByteOrder.h>
 
 static NSData *bytes(NSString *s) { return [s dataUsingEncoding:NSUTF8StringEncoding]; }
 static NSData *hash(NSData *data) { unsigned char h[20];CC_SHA1(data.bytes,(CC_LONG)data.length,h);return [NSData dataWithBytes:h length:20]; }
+// A one-entry deflated zip, the form Steam's own client uploads.
+static NSData *zipped(NSData *data) {
+    uint8_t out[512];z_stream s={0};assert(deflateInit2(&s,9,Z_DEFLATED,-15,8,Z_DEFAULT_STRATEGY)==Z_OK);
+    s.next_in=(Bytef *)data.bytes;s.avail_in=(uInt)data.length;s.next_out=out;s.avail_out=sizeof out;assert(deflate(&s,Z_FINISH)==Z_STREAM_END);deflateEnd(&s);
+    uint8_t header[31]={0x50,0x4b,0x03,0x04,20,0,0,0,8,0};header[26]=1;header[30]='Z';
+    OSWriteLittleInt32(header,14,(uint32_t)crc32(0,data.bytes,(uInt)data.length));OSWriteLittleInt32(header,18,(uint32_t)s.total_out);OSWriteLittleInt32(header,22,(uint32_t)data.length);
+    NSMutableData *zip=[NSMutableData dataWithBytes:header length:sizeof header];[zip appendBytes:out length:s.total_out];return zip;
+}
 @interface FixtureConnection : TKSteamCloudConnection
 @property(nonatomic,strong) NSData *remote;   // save.json
 @property(nonatomic,strong) NSMutableDictionary<NSString *,NSData *> *files;
 @property(nonatomic,copy) NSString *uploading;
 @property(nonatomic,strong) NSDictionary<NSString *,NSData *> *changeAfterBatch;   // another device's write
-@property(nonatomic) BOOL corruptDownload;
+@property(nonatomic) BOOL corruptDownload, zipDownload;
 @property(nonatomic) unsigned uploads;
 @end
 @implementation FixtureConnection
@@ -33,7 +43,8 @@ static NSData *hash(NSData *data) { unsigned char h[20];CC_SHA1(data.bytes,(CC_L
     }
     if([method isEqual:@"Cloud.ClientFileDownload#1"]) {
         NSString *name=[fields[@2] substringFromIndex:@"fixture/".length];
-        return TKCloudParse(TKCloudProto(@{@999:self.corruptDownload?bytes(@"bad download"):self.files[name]}));
+        NSData *raw=self.files[name],*sent=self.zipDownload?zipped(raw):raw;
+        return TKCloudParse(TKCloudProto(@{@2:@(sent.length),@3:@(raw.length),@999:self.corruptDownload?bytes(@"bad download"):sent}));
     }
     if([method isEqual:@"Cloud.BeginAppUploadBatch#1"])return TKCloudParse(TKCloudProto(@{@1:@77,@4:@13}));
     if([method isEqual:@"Cloud.CompleteAppUploadBatchBlocking#1"]) {
@@ -106,7 +117,11 @@ int main(void) { @autoreleasepool {
     NSString *badLocal=[root stringByAppendingPathComponent:@"bad-local"],*badState=[root stringByAppendingPathComponent:@"bad-state"];
     connection.corruptDownload=YES;sync=makeSync(badLocal,badState,connection);error=nil;
     assert(![sync syncUsername:@"fixture" token:@"fixture" allowUpload:NO report:&report error:&error]);assert(error.code==41);assert(![NSFileManager.defaultManager fileExistsAtPath:badLocal]);
-    connection.corruptDownload=NO;unlink(save.fileSystemRepresentation);assert(!symlink("/tmp",save.fileSystemRepresentation));sync=makeSync(local,state,connection);error=nil;
+    NSString *zipLocal=[root stringByAppendingPathComponent:@"zip-local"],*zipState=[root stringByAppendingPathComponent:@"zip-state"];
+    connection.corruptDownload=NO;connection.zipDownload=YES;sync=makeSync(zipLocal,zipState,connection);error=nil;
+    assert([sync syncUsername:@"fixture" token:@"fixture" allowUpload:NO report:&report error:&error]);
+    assert([[NSData dataWithContentsOfFile:[zipLocal stringByAppendingPathComponent:@"save.json"]] isEqual:connection.remote]);
+    connection.zipDownload=NO;unlink(save.fileSystemRepresentation);assert(!symlink("/tmp",save.fileSystemRepresentation));sync=makeSync(local,state,connection);error=nil;
     assert(![sync syncUsername:@"fixture" token:@"fixture" allowUpload:YES report:&report error:&error]);assert(error.code==32);
     NSData *broken=[NSJSONSerialization dataWithJSONObject:@{@"appID":@42,@"steamID":@123,@"files":@42} options:0 error:nil];assert([broken writeToFile:[state stringByAppendingPathComponent:@"baseline.json"] atomically:YES]);error=nil;
     assert(![sync syncUsername:@"fixture" token:@"fixture" allowUpload:YES report:&report error:&error]);assert(error.code==31);
@@ -128,5 +143,5 @@ int main(void) { @autoreleasepool {
     FixtureCoordinator *coordinator=[[FixtureCoordinator alloc] initWithProfile:@"fixture" documents:NSTemporaryDirectory()];
     assert(NSThread.isMainThread);[coordinator flush];assert(coordinator.callbackRan);
     puts("Steam Cloud: final flush keeps main-thread callbacks responsive PASS");
-    puts("Steam Cloud: bounded protobuf, malformed input, first pull, backups, uploads, remote changes, conflicts, a remote change during upload and symlink rejection PASS");
+    puts("Steam Cloud: bounded protobuf, malformed input, first pull, zipped downloads, backups, uploads, remote changes, conflicts, a remote change during upload and symlink rejection PASS");
 } return 0; }

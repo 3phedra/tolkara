@@ -2,12 +2,30 @@
 #include <CommonCrypto/CommonDigest.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <zlib.h>
+#include <libkern/OSByteOrder.h>
 
 static NSError *syncError(NSInteger code) { return [NSError errorWithDomain:@"TolkaraSteamCloudSync" code:code userInfo:nil]; }
 static NSString *text(NSData *bytes) { return [bytes isKindOfClass:NSData.class] ? [[NSString alloc] initWithData:bytes encoding:NSUTF8StringEncoding] : nil; }
 static NSString *sha1(NSData *bytes) {
     unsigned char hash[CC_SHA1_DIGEST_LENGTH]; CC_SHA1(bytes.bytes, (CC_LONG)bytes.length, hash);
     NSMutableString *result = [NSMutableString new]; for (unsigned i = 0; i < sizeof hash; i++) [result appendFormat:@"%02x",hash[i]]; return result;
+}
+// Steam's own client may upload a save as a one-entry zip; the download then
+// reports a transfer size different from the raw size. Returns the raw bytes.
+static NSData *unpackCloudZip(NSData *zip, uint64_t rawSize) {
+    const uint8_t *p = zip.bytes; NSUInteger n = zip.length;
+    if (n < 30 || OSReadLittleInt32(p,0) != 0x04034b50 || (OSReadLittleInt16(p,6) & 1) || !rawSize || rawSize > 16*1024*1024) return nil;
+    uint16_t method = OSReadLittleInt16(p,8); NSUInteger offset = 30 + (NSUInteger)OSReadLittleInt16(p,26) + OSReadLittleInt16(p,28);
+    if (offset > n) return nil;
+    if (method == 0) return n - offset >= rawSize ? [zip subdataWithRange:NSMakeRange(offset,(NSUInteger)rawSize)] : nil;
+    if (method != 8) return nil;
+    NSMutableData *raw = [NSMutableData dataWithLength:(NSUInteger)rawSize]; z_stream stream = {0};
+    stream.next_in = (Bytef *)p + offset; stream.avail_in = (uInt)(n - offset);
+    stream.next_out = raw.mutableBytes; stream.avail_out = (uInt)raw.length;
+    int status = inflateInit2(&stream, -15);
+    if (status == Z_OK) { status = inflate(&stream, Z_FINISH); inflateEnd(&stream); }
+    return status == Z_STREAM_END && stream.total_out == rawSize ? raw : nil;
 }
 @interface TKSteamCloudSync () <NSURLSessionTaskDelegate> {
     uint32_t _appID;
@@ -103,6 +121,7 @@ static NSString *sha1(NSData *bytes) {
             NSDictionary *metadata = [client call:@"Cloud.ClientFileDownload#1" fields:@{@1:@(_appID),@2:info[@"remoteName"]} error:error];
             if (!metadata || TKCloudNumber(metadata,6) || TKCloudNumber(metadata,11)) { if (error && !*error) *error = syncError(40); return NO; }
             NSData *bytes = [self transfer:metadata host:7 path:8 tls:9 headers:10 data:nil error:error];
+            if (bytes && TKCloudNumber(metadata,3) && TKCloudNumber(metadata,2) != TKCloudNumber(metadata,3)) bytes = unpackCloudZip(bytes, TKCloudNumber(metadata,3));
             if (!bytes || bytes.length != [info[@"size"] unsignedLongLongValue] || ![sha1(bytes) isEqual:info[@"sha1"]]) { if (error && !*error) *error = syncError(41); return NO; }
             downloads[name] = bytes;
         }
