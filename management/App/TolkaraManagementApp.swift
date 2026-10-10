@@ -42,4 +42,5 @@ enum Links {
     static let risk = URL(string: "https://github.com/tolkara/tolkara#online-games-and-account-risk")!
     static let enroll = URL(string: "https://developer.apple.com/programs/enroll/")!
     static let membership = URL(string: "https://developer.apple.com/account")!
+    static let membershipDetails = URL(string: "https://developer.apple.com/account#MembershipDetailsCard")!
 }

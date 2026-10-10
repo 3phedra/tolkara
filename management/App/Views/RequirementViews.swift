@@ -68,7 +68,9 @@ struct MembershipView: View {
                         team.kind == .paid ? "You have a paid membership" : "Team \(team.id) will be confirmed when Tolkara is built",
                         message: team.kind == .paid
                             ? "Tolkara will be built with \(team.name) (\(team.id))."
-                            : "This Mac has no record of the team yet. If the membership is not paid, the build will say so.")
+                            : team.evidence == "Entered by you"
+                                ? "This Mac has no record of the team yet. If the membership is not paid, the build will say so."
+                                : "Found through: \(team.evidence.lowercased()). If the membership is not paid, the build will say so.")
             } else if !paid.isEmpty {
                 Callout(.info, "Choose the team to build with", message: "This Mac knows several teams with a paid membership.")
             } else if model.teams.contains(where: { $0.kind == .free }) {
@@ -87,20 +89,41 @@ struct MembershipView: View {
                         Button("Check Again") { model.scanMembership() }
                     }
                 }
-            } else {
-                Callout(.warning, "Your team is not on this Mac yet",
-                        message: "Xcode saves your team on this Mac only after it has built something or fetched your account, so a Mac that has never built an app usually shows nothing here, even when Xcode is signed in. Make sure Xcode is signed in, then enter your Team ID below. The first build confirms your membership with Apple.") {
-                    NumberedSteps(steps: ["Open Xcode, choose **Xcode › Settings…**, then **Apple Accounts**. Sign in with the Apple Account of your developer membership if it is not listed.",
-                                          "Find your **Team ID** at developer.apple.com › Account › Membership details: 10 letters and digits.",
-                                          "Enter it below. This page also keeps checking by itself, in case Xcode saves your team meanwhile."])
+            } else if model.xcodeAccounts == 0 {
+                Callout(.warning, "Sign in to Xcode with your developer account",
+                        message: "Xcode signs Tolkara with your account, so it needs to be signed in. If you do not have Xcode yet, get it on the This Mac step first, then come back. You can enter your Team ID below meanwhile.") {
+                    NumberedSteps(steps: ["Open Xcode, choose **Xcode › Settings…**, then **Apple Accounts**.",
+                                          "Click **+** or **Sign In…** and sign in with the Apple Account of your developer membership.",
+                                          "Come back here. This page notices by itself."])
                     HStack {
                         Button("Open Xcode") { if let xcode = model.xcode { NSWorkspace.shared.open(xcode.url) } }
                             .disabled(model.xcode == nil)
-                        Link("Membership Details", destination: Links.membership)
+                        Button("Check Again") { model.scanMembership() }
                         Link("Join the Apple Developer Program", destination: Links.enroll)
                     }
                 }
-                teamEntry
+                teamIDCard
+            } else {
+                Callout(.warning, "Xcode is signed in, but has not saved your team yet",
+                        message: "Xcode keeps your team on this Mac only once it has signed an app with it\(model.signingCertificates == 0 ? ", and there is no signing certificate on this Mac yet either" : ""). So on a Mac where Xcode has never signed anything this page cannot see your team, even though Xcode › Settings › Apple Accounts lists it. Let Xcode sign once for your team, or enter your Team ID.") {
+                    Text("Choose your team in Xcode").font(.subheadline.weight(.semibold)).padding(.top, 4)
+                    NumberedSteps(steps: ["Click **Choose Team in Xcode**. It opens Team Check, a small empty project made for this. It is never built.",
+                                          "In Xcode, click **Team Check** at the top of the left column, then the **Signing & Capabilities** tab.",
+                                          "Choose your team in the **Team** menu, not one marked Personal Team. Xcode saves it and creates your development certificate if there is none.",
+                                          "Come back here. This page picks your team up by itself."])
+                    HStack {
+                        Button("Choose Team in Xcode") { model.openTeamProbe() }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(model.xcode == nil)
+                        Button("Check Again") { model.scanMembership() }
+                    }
+                    if let error = model.teamProbeError {
+                        Text(error).font(.callout).foregroundStyle(.red)
+                    } else if model.teamProbeOpened {
+                        Text("Waiting for a team in Team Check…").font(.callout).foregroundStyle(.secondary)
+                    }
+                }
+                teamIDCard
             }
 
             if !model.teams.isEmpty {
@@ -109,7 +132,7 @@ struct MembershipView: View {
                         ForEach(model.teams) { team in
                             CheckRow(team.name, detail: "\(team.id) · \(description(team.kind)) · \(team.evidence)",
                                      status: team.kind == .paid ? .ok : team.kind == .unknown ? .warning : .failed) {
-                                if team.kind == .paid {
+                                if team.kind == .paid || team.kind == .unknown {
                                     if model.state.team?.id == team.id {
                                         Text("Selected").foregroundStyle(.secondary)
                                     } else {
@@ -125,7 +148,11 @@ struct MembershipView: View {
 
             if !model.teams.isEmpty || model.state.team != nil {
                 DisclosureGroup("I have a paid membership, but it is not listed", isExpanded: $showManual) {
-                    teamEntry.padding(.top, 6)
+                    VStack(alignment: .leading, spacing: 8) {
+                        teamIDHelp
+                        teamEntry
+                    }
+                    .padding(.top, 6)
                 }
             }
         }
@@ -138,6 +165,30 @@ struct MembershipView: View {
         }
     }
 
+    /// The Team ID, the way that always works: Apple shows it on the web.
+    private var teamIDCard: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Or enter your Team ID").font(.headline)
+                teamIDHelp
+                teamEntry
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(6)
+        }
+    }
+
+    private var teamIDHelp: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            NumberedSteps(steps: ["Open your Apple Developer account and sign in with the Apple Account of your membership.",
+                                  "Under **Membership details**, copy the **Team ID**: 10 letters and digits.",
+                                  "Paste it here and click **Use Team ID**. The first build confirms your membership with Apple."])
+            Link(destination: Links.membershipDetails) {
+                Label("Open Membership Details on developer.apple.com", systemImage: "arrow.up.right.square")
+            }
+        }
+    }
+
     private var teamEntry: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
@@ -146,7 +197,7 @@ struct MembershipView: View {
                     .frame(maxWidth: 240)
                     .onSubmit(useTyped)
                 Button("Use Team ID", action: useTyped)
-                    .disabled(teamID.trimmingCharacters(in: .whitespaces).uppercased().wholeMatch(of: MembershipScanner.teamID) == nil)
+                    .disabled(MembershipScanner.teamID(fromTyped: teamID) == nil)
             }
             Text("Xcode must be signed in to the same account: it signs Tolkara.")
                 .font(.callout)
