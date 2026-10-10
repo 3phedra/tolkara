@@ -20,14 +20,23 @@ struct DeveloperTeam: Identifiable, Hashable, Codable {
 ///   a free Personal Team's seven days, and only a paid team gets the Network
 ///   Extension capability Tolkara needs.
 /// Nothing is sent anywhere. The first build confirms the result for real.
+/// On a Mac that has never built an app neither may exist yet, even with Xcode
+/// signed in: Xcode saves its team list only after it fetched the teams. The
+/// user then enters the Team ID, and the first build confirms it.
 enum MembershipScanner {
     static let teamID = /^[A-Z0-9]{10}$/
 
     static func scan() -> [DeveloperTeam] {
         var found: [DeveloperTeam] = []
-        if let defaults = UserDefaults(suiteName: Toolchain.xcodeBundleIdentifier) {
-            found += teams(fromXcodeDefaults: defaults.dictionaryRepresentation())
+        // Read Xcode's settings afresh: Xcode may have saved its team list
+        // since the last check, and a process caches another app's settings.
+        let domain = Toolchain.xcodeBundleIdentifier as CFString
+        CFPreferencesAppSynchronize(domain)
+        var defaults: [String: Any] = [:]
+        for key in ["IDEProvisioningTeamByIdentifier", "IDEProvisioningTeams"] {
+            if let value = CFPreferencesCopyAppValue(key as CFString, domain) { defaults[key] = value }
         }
+        found += teams(fromXcodeDefaults: defaults)
         found += provisioningProfiles().compactMap { team(fromProfile: $0) }
         return merge(found)
     }

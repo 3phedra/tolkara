@@ -88,18 +88,19 @@ struct MembershipView: View {
                     }
                 }
             } else {
-                Callout(.warning, "Sign in to Xcode with your developer account",
-                        message: "This Mac does not know your developer account yet. If you do not have Xcode, get it on the This Mac step first, then come back.") {
-                    NumberedSteps(steps: ["Open Xcode.", "Choose **Xcode › Settings…**, then **Apple Accounts** (or **Accounts**).",
-                                          "Click **+** and sign in with the Apple Account of your developer membership.",
-                                          "Come back here and click **Check Again**."])
+                Callout(.warning, "Your team is not on this Mac yet",
+                        message: "Xcode saves your team on this Mac only after it has built something or fetched your account, so a Mac that has never built an app usually shows nothing here, even when Xcode is signed in. Make sure Xcode is signed in, then enter your Team ID below. The first build confirms your membership with Apple.") {
+                    NumberedSteps(steps: ["Open Xcode, choose **Xcode › Settings…**, then **Apple Accounts**. Sign in with the Apple Account of your developer membership if it is not listed.",
+                                          "Find your **Team ID** at developer.apple.com › Account › Membership details: 10 letters and digits.",
+                                          "Enter it below. This page also keeps checking by itself, in case Xcode saves your team meanwhile."])
                     HStack {
                         Button("Open Xcode") { if let xcode = model.xcode { NSWorkspace.shared.open(xcode.url) } }
                             .disabled(model.xcode == nil)
-                        Button("Check Again") { model.scanMembership() }
+                        Link("Membership Details", destination: Links.membership)
                         Link("Join the Apple Developer Program", destination: Links.enroll)
                     }
                 }
+                teamEntry
             }
 
             if !model.teams.isEmpty {
@@ -122,23 +123,34 @@ struct MembershipView: View {
                 .pageForm()
             }
 
-            DisclosureGroup("I have a paid membership, but it is not listed", isExpanded: $showManual) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Find your Team ID at developer.apple.com › Account › Membership details. Make sure Xcode is signed in to the same account: it signs Tolkara.")
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    HStack {
-                        TextField("Team ID", text: $teamID, prompt: Text("10 letters and digits"))
-                            .textFieldStyle(.roundedBorder)
-                            .frame(maxWidth: 200)
-                            .onSubmit(useTyped)
-                        Button("Use Team ID", action: useTyped)
-                            .disabled(teamID.trimmingCharacters(in: .whitespaces).uppercased().wholeMatch(of: MembershipScanner.teamID) == nil)
-                        Link("Membership Details", destination: Links.membership)
-                    }
+            if !model.teams.isEmpty || model.state.team != nil {
+                DisclosureGroup("I have a paid membership, but it is not listed", isExpanded: $showManual) {
+                    teamEntry.padding(.top, 6)
                 }
-                .padding(.top, 6)
             }
+        }
+        .task {
+            // Xcode may save its team list while this page is open.
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(3))
+                if model.state.team == nil || model.state.team?.kind == .unknown { model.scanMembership() }
+            }
+        }
+    }
+
+    private var teamEntry: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                TextField("Team ID", text: $teamID, prompt: Text("Team ID, 10 letters and digits"))
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 240)
+                    .onSubmit(useTyped)
+                Button("Use Team ID", action: useTyped)
+                    .disabled(teamID.trimmingCharacters(in: .whitespaces).uppercased().wholeMatch(of: MembershipScanner.teamID) == nil)
+            }
+            Text("Xcode must be signed in to the same account: it signs Tolkara.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
         }
     }
 
