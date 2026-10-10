@@ -82,6 +82,86 @@ class ProfileTests(unittest.TestCase):
         runtime = {'id': 'w', 'name': 'W', 'workingDirectory': 'W/game', 'runtime': 'W/Runtime', 'executable': 'bin/run'}
         with self.assertRaises(ValueError): check(self.write({**runtime, 'setup': {}}))
 
+    def test_setup_first_run(self):
+        # The settings file the game's first start on the Mac writes, and the keys it must hold.
+        good = {'id': 'a', 'name': 'A', 'workingDirectory': 'Games/A', 'executable': 'A.app/Contents/MacOS/A'}
+        first_run = {'settings': 'A/WTF/Config.wtf', 'keys': ['portal', 'textLocale'], 'steps': ['Start **A** once.']}
+        check(self.write({**good, 'setup': {'firstRun': first_run}}))
+        check(self.write({**good, 'setup': {'firstRun': {'settings': 'Config.wtf', 'keys': ['portal']}}}))
+        for change in ({'settings': '/Applications/A/Config.wtf'}, {'settings': '../Config.wtf'}, {'settings': ''},
+                       {'keys': []}, {'keys': 'portal'}, {'keys': ['por tal']}, {'keys': ['portal"']}, {'keys': [1]},
+                       {'keys': [f'k{i}' for i in range(17)]}, {'steps': 'Start'}, {'steps': ['']}, {'steps': ['x'] * 17},
+                       {'run': 'x'}):
+            with self.assertRaises(ValueError, msg=repr(change)): check(self.write({**good, 'setup': {'firstRun': {**first_run, **change}}}))
+        with self.assertRaises(ValueError): check(self.write({**good, 'setup': {'firstRun': {'keys': ['portal']}}}))
+        with self.assertRaises(ValueError): check(self.write({**good, 'setup': {'firstRun': {'settings': 'Config.wtf'}}}))
+        # Both WoW clients name their own Config.wtf.
+        for name, folder in (('wow-classic-era', '_classic_era_'), ('wow-forever', '_classic_beta_')):
+            block = check(ROOT / 'profiles' / name / 'profile.json')['setup']['firstRun']
+            self.assertEqual(block['settings'], f'{folder}/WTF/Config.wtf')
+            self.assertEqual(block['keys'], ['portal', 'textLocale', 'audioLocale'])
+
+
+class FirstRunTests(unittest.TestCase):
+    """tools/first_run.py: the WoW copiers carry the region and languages the game saved on the Mac."""
+    KEYS = ['portal', 'textLocale', 'audioLocale']
+    CONFIGURED = 'SET accountName "someone@example.com"\nSET portal "eu"\nSET textLocale "deDE"\nSET audioLocale "deDE"\nSET gxApi "metal"\n'
+
+    def setUp(self):
+        import first_run
+        self.first_run = first_run
+        self.folder = Path(tempfile.mkdtemp()); self.addCleanup(__import__('shutil').rmtree, self.folder)
+
+    def game(self, config):
+        """A fixture 'World of Warcraft' folder whose Classic Era client has this Config.wtf (None: never started)."""
+        source = self.folder / 'World of Warcraft'
+        (source / '_classic_era_' / 'WTF').mkdir(parents=True, exist_ok=True)
+        if config is not None: (source / '_classic_era_/WTF/Config.wtf').write_text(config)
+        return source
+
+    def test_saved(self):
+        values = self.first_run.saved(self.CONFIGURED, self.KEYS)
+        self.assertEqual(values, {'portal': 'eu', 'textLocale': 'deDE', 'audioLocale': 'deDE'})
+        self.assertEqual(self.first_run.missing(values, self.KEYS), [])
+        # Only plain values of the named keys: never the account name, never an empty or odd value.
+        partial = self.first_run.saved('SET portal ""\nSET textLocale "enUS"\nSET audioLocale "en US"\n# SET portal "us"\n', self.KEYS)
+        self.assertEqual(partial, {'textLocale': 'enUS'})
+        self.assertEqual(self.first_run.missing(partial, self.KEYS), ['portal', 'audioLocale'])
+        self.assertEqual(self.first_run.read(self.folder / 'missing.wtf', self.KEYS), {})
+
+    def test_merge_keeps_the_devices_other_settings(self):
+        device = 'SET graphicsQuality "2"\nSET portal "us"\nSET RenderScale "0.5"\nSET portal "kr"\n'
+        merged = self.first_run.merge(device, {'portal': 'eu', 'textLocale': 'deDE'})
+        self.assertEqual(merged, 'SET graphicsQuality "2"\nSET portal "eu"\nSET RenderScale "0.5"\nSET textLocale "deDE"\n')
+        self.assertEqual(self.first_run.merge('', {'portal': 'eu'}), 'SET portal "eu"\n')
+
+    def stage(self, source, device=''):
+        stage = self.folder / 'stage'
+        original = self.first_run.device_text
+        self.first_run.device_text = lambda *_: device
+        try: self.first_run.stage(source, stage, 'World of Warcraft', ROOT / 'profiles' / 'wow-classic-era', 'DEVICE', 'bundle')
+        finally: self.first_run.device_text = original
+        return stage / '_classic_era_/WTF/Config.wtf'
+
+    def test_stage_configured(self):
+        staged = self.stage(self.game(self.CONFIGURED), device='SET graphicsQuality "2"\nSET portal "us"\n')
+        self.assertEqual(staged.read_text(), 'SET graphicsQuality "2"\nSET portal "eu"\nSET textLocale "deDE"\nSET audioLocale "deDE"\n')
+        self.assertNotIn('accountName', staged.read_text())
+
+    def test_stage_never_started(self):
+        # The tutorial case: Battle.net installed the game, nobody started it on the Mac.
+        for config in (None, 'SET gxApi "metal"\n'):
+            with self.assertRaises(SystemExit) as raised: self.stage(self.game(config))
+            self.assertIn('has not been started on this Mac', str(raised.exception.code))
+            self.assertIn('Click Play', str(raised.exception.code))
+            self.assertFalse((self.folder / 'stage/_classic_era_/WTF/Config.wtf').exists())
+
+    def test_stage_keeps_what_the_device_has(self):
+        # Copied before, the Mac's WTF folder since cleared: the device keeps its own; nothing stale is staged.
+        stale = self.folder / 'stage/_classic_era_/WTF/Config.wtf'
+        stale.parent.mkdir(parents=True); stale.write_text('SET portal "us"\n')
+        self.assertFalse(self.stage(self.game(None), device=self.CONFIGURED).exists())
+
     def test_heroes3_hd_settings(self):
         # The staged copy's HD mod settings: pinned keys replaced in place, CRLF kept, defaults used on a fresh copy.
         sys.path.insert(0, str(ROOT / 'profiles' / 'heroes3-hota'))
