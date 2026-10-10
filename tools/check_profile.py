@@ -11,8 +11,10 @@ ENVIRONMENT_NAME = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
 INSTALLER = re.compile(r'[A-Za-z0-9_-]+\.py')
 # setup is read by the Tolkara Management app on the Mac (management/), never by
 # the iPad launcher. Keep management/App/Core/Profile.swift in step with this.
-SETUP = ('source', 'destination', 'installer', 'getApp', 'risk')
+SETUP = ('source', 'destination', 'installer', 'getApp', 'firstRun', 'risk')
 GET_APP = ('name', 'url', 'path', 'steps')
+FIRST_RUN = ('settings', 'keys', 'steps')
+SETTING_KEY = re.compile(r'[A-Za-z0-9_]{1,64}')
 RISK = ('summary', 'history', 'links')
 
 
@@ -66,7 +68,8 @@ def entries(value, name, keys):
 def check_setup(profile):
     """setup: how the Mac app sets the application up. Plain data: where the user's own copy usually
     is on the Mac, which Documents folder it becomes, the profile folder's own copy helper, where to
-    get the application, and the account risk to show before it is set up."""
+    get the application, the settings its first start on the Mac must have saved, and the account
+    risk to show before it is set up."""
     setup = profile['setup']
     if not isinstance(setup, dict): raise ValueError('setup must be an object')
     unknown = set(setup) - set(SETUP)
@@ -91,6 +94,21 @@ def check_setup(profile):
         steps = get_app.get('steps', [])
         if not isinstance(steps, list) or len(steps) > 16: raise ValueError('setup.getApp.steps must be a list of at most 16 strings')
         for step in steps: text(step, 'setup.getApp.steps')
+    if 'firstRun' in setup:
+        # A settings file the application writes when it first starts on the Mac (WoW's
+        # WTF/Config.wtf, in `SET key "value"` lines), relative to the source folder, and
+        # the keys it must hold. Nothing runs: the Mac app only reads the file.
+        first_run = setup['firstRun']
+        if not isinstance(first_run, dict) or set(first_run) - set(FIRST_RUN) or not {'settings', 'keys'} <= set(first_run):
+            raise ValueError('setup.firstRun needs settings and keys, optionally steps')
+        if not relative(first_run['settings']) or len(first_run['settings']) > 1024:
+            raise ValueError('setup.firstRun.settings must be a path inside the source folder')
+        keys = first_run['keys']
+        if not isinstance(keys, list) or not 1 <= len(keys) <= 16 or not all(isinstance(k, str) and SETTING_KEY.fullmatch(k) for k in keys):
+            raise ValueError('setup.firstRun.keys must be a list of 1 to 16 setting names')
+        steps = first_run.get('steps', [])
+        if not isinstance(steps, list) or len(steps) > 16: raise ValueError('setup.firstRun.steps must be a list of at most 16 strings')
+        for step in steps: text(step, 'setup.firstRun.steps')
     if 'risk' in setup:
         risk = setup['risk']
         if not isinstance(risk, dict) or set(risk) - set(RISK) or 'summary' not in risk:

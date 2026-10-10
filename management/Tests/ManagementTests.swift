@@ -72,6 +72,129 @@ final class ProfileTests: XCTestCase {
     }
 }
 
+/// setup.firstRun: the game must have started once on this Mac, which saves
+/// its region and language (WoW's WTF/Config.wtf), or it quits on the device.
+final class FirstRunTests: XCTestCase {
+    let repository = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    let configured = "SET accountName \"someone@example.com\"\nSET portal \"eu\"\nSET textLocale \"deDE\"\nSET audioLocale \"deDE\"\nSET gxApi \"metal\"\n"
+    var folder: URL!
+
+    override func setUpWithError() throws {
+        folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws { try? FileManager.default.removeItem(at: folder) }
+
+    func shipped(_ id: String) throws -> AppProfile {
+        try XCTUnwrap(ProfileParser.catalog(source: repository).profiles.first { $0.id == id })
+    }
+
+    /// A fixture "World of Warcraft" folder as Battle.net leaves it: the client,
+    /// and a Config.wtf only once the game has started (nil: never started).
+    func game(_ profile: AppProfile, config: String?) throws -> URL {
+        let source = folder.appendingPathComponent(profile.destination)
+        let executable = profile.executable(inSource: source)
+        try FileManager.default.createDirectory(at: executable.deletingLastPathComponent(), withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: executable.path, contents: Data(), attributes: [.posixPermissions: 0o755])
+        let settings = source.appendingPathComponent(try XCTUnwrap(profile.firstRun).settings)
+        try FileManager.default.createDirectory(at: settings.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if let config { try config.write(to: settings, atomically: true, encoding: .utf8) }
+        return source
+    }
+
+    func testShippedWoWProfilesNeedAFirstRun() throws {
+        for (id, client) in [("wow-classic-era", "_classic_era_"), ("wow-forever", "_classic_beta_")] {
+            let firstRun = try XCTUnwrap(try shipped(id).firstRun, id)
+            XCTAssertEqual(firstRun.settings, "\(client)/WTF/Config.wtf")
+            XCTAssertEqual(firstRun.keys, ["portal", "textLocale", "audioLocale"])
+            XCTAssertTrue(firstRun.steps.contains { $0.contains("Battle.net") })
+            XCTAssertEqual(try shipped(id).firstRunDevicePath, "Documents/World of Warcraft/\(client)/WTF/Config.wtf")
+        }
+        XCTAssertNil(try shipped("heroes3-hota").firstRun)
+    }
+
+    func testFixtureFolders() throws {
+        for id in ["wow-classic-era", "wow-forever"] {
+            let profile = try shipped(id)
+            let firstRun = try XCTUnwrap(profile.firstRun)
+            // Installed by Battle.net and never started: the tutorial case.
+            var check = FirstRunCheck.check(firstRun, source: try game(profile, config: nil))
+            XCTAssertFalse(check.isDone)
+            XCTAssertFalse(check.fileExists)
+            XCTAssertEqual(check.missing, ["portal", "textLocale", "audioLocale"])
+            // Started, but no region saved (graphics settings only).
+            check = FirstRunCheck.check(firstRun, source: try game(profile, config: "SET gxApi \"metal\"\nSET portal \"\"\n"))
+            XCTAssertTrue(check.fileExists)
+            XCTAssertEqual(check.missing, ["portal", "textLocale", "audioLocale"])
+            check = FirstRunCheck.check(firstRun, source: try game(profile, config: "SET portal \"us\"\nSET textLocale \"enUS\"\n"))
+            XCTAssertEqual(check.missing, ["audioLocale"])
+            // Started from Battle.net, region and languages chosen.
+            check = FirstRunCheck.check(firstRun, source: try game(profile, config: configured))
+            XCTAssertTrue(check.isDone)
+            XCTAssertEqual(check.values, ["portal": "eu", "textLocale": "deDE", "audioLocale": "deDE"])
+            XCTAssertEqual(check.summary, "eu · deDE · deDE")
+            try FileManager.default.removeItem(at: folder.appendingPathComponent(profile.destination))
+        }
+    }
+
+    func testOnlyTheNamedKeysAreRead() {
+        let keys = ["portal", "textLocale", "audioLocale"]
+        XCTAssertEqual(FirstRunCheck.values(in: configured, keys: keys).keys.sorted(), ["audioLocale", "portal", "textLocale"])
+        XCTAssertEqual(FirstRunCheck.values(in: "SET portal \"test\"\r\n  SET textLocale \"enUS\"  \n# SET audioLocale \"enUS\"\nSET audioLocale \"en US\"", keys: keys),
+                       ["portal": "test", "textLocale": "enUS"])
+        XCTAssertEqual(FirstRunCheck.values(in: "", keys: keys), [:])
+    }
+
+    func testDeviceSettings() throws {
+        let firstRun = try XCTUnwrap(try shipped("wow-classic-era").firstRun)
+        let mac = FirstRunCheck.check(firstRun, deviceFile: Data(configured.utf8))
+        let none = FirstRunCheck.check(firstRun, deviceFile: nil)
+        let other = FirstRunCheck.check(firstRun, deviceFile: Data("SET graphicsQuality \"2\"\nSET portal \"us\"\nSET textLocale \"enUS\"\nSET audioLocale \"enUS\"\n".utf8))
+        let macNever = FirstRunCheck(keys: firstRun.keys, fileExists: false, values: [:])
+        XCTAssertFalse(none.fileExists)
+        // Copied by Tolkara 0.2.0 from a Mac where the game never started.
+        XCTAssertEqual(DeviceSettings.compare(mac: macNever, device: none), .startOnMac)
+        XCTAssertEqual(DeviceSettings.compare(mac: nil, device: none), .startOnMac)
+        // Started on the Mac since: Copy Again.
+        XCTAssertEqual(DeviceSettings.compare(mac: mac, device: none), .copyAgain(changed: false))
+        XCTAssertEqual(DeviceSettings.compare(mac: mac, device: other), .copyAgain(changed: true))
+        XCTAssertEqual(DeviceSettings.compare(mac: mac, device: mac), .fine)
+        // The device keeps what it has when this Mac's settings are gone.
+        XCTAssertEqual(DeviceSettings.compare(mac: macNever, device: other), .fine)
+        // Not read (a profile without firstRun): nothing to say.
+        XCTAssertEqual(DeviceSettings.compare(mac: nil, device: nil), .fine)
+    }
+
+    func testProfileRules() throws {
+        let good: [String: Any] = ["id": "a", "name": "A", "workingDirectory": "Games/A", "executable": "A.app/Contents/MacOS/A"]
+        let firstRun: [String: Any] = ["settings": "A/WTF/Config.wtf", "keys": ["portal"], "steps": ["Start **A** once."]]
+        let parsed = try ProfileParser.parse(try JSONSerialization.data(withJSONObject: good.merging(["setup": ["firstRun": firstRun]]) { $1 }),
+                                             origin: .imported(file: URL(fileURLWithPath: "/x.json")))
+        XCTAssertEqual(parsed.firstRun, .init(settings: "A/WTF/Config.wtf", keys: ["portal"], steps: ["Start **A** once."]))
+        // The same rejections as tools/check_profile.py.
+        let bad: [[String: Any]] = [
+            ["settings": "/Applications/A/Config.wtf"], ["settings": "../Config.wtf"], ["settings": ""], ["keys": [String]()],
+            ["keys": "portal"], ["keys": ["por tal"]], ["keys": ["portal\""]], ["keys": [1]], ["keys": (0..<17).map { "k\($0)" }],
+            ["steps": "Start"], ["steps": [""]], ["steps": Array(repeating: "x", count: 17)], ["run": "x"],
+        ]
+        for change in bad {
+            let value = good.merging(["setup": ["firstRun": firstRun.merging(change) { $1 }]]) { $1 }
+            XCTAssertThrowsError(try ProfileParser.parse(try JSONSerialization.data(withJSONObject: value), origin: .imported(file: URL(fileURLWithPath: "/x.json"))), "\(change)")
+        }
+        for missing in ["settings", "keys"] {
+            let value = good.merging(["setup": ["firstRun": firstRun.filter { $0.key != missing }]]) { $1 }
+            XCTAssertThrowsError(try ProfileParser.parse(try JSONSerialization.data(withJSONObject: value), origin: .imported(file: URL(fileURLWithPath: "/x.json"))), missing)
+        }
+    }
+
+    func testCopyRefusalPointsToTheGameStep() {
+        // The app's own refusal and the copy helper's (tools/first_run.py) lead to the Game step.
+        XCTAssertEqual(Diagnoser.diagnose(FirstRunError(profile: "World of Warcraft Classic").localizedDescription, source: nil)?.step, .game)
+        XCTAssertEqual(Diagnoser.diagnose("_classic_era_/WTF/Config.wtf on this Mac has no portal, textLocale, audioLocale.\nThe game has not been started on this Mac yet", source: nil)?.step, .game)
+    }
+}
+
 final class LocalEnvTests: XCTestCase {
     func testRender() throws {
         let text = try LocalEnv.render(.init(team: "ABCDE12345", bundleID: "local.tolkara.abcde12345", device: "00000000-0001",

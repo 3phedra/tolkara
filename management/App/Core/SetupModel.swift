@@ -54,6 +54,10 @@ final class SetupModel {
 
     var update: (version: String, url: URL)?
 
+    /// Changed whenever files on this Mac may have changed (the app became
+    /// active again, a page polls): checks that read them run again.
+    var macFilesChecked = 0
+
     init() {
         if state.welcomed { selection = firstIncompleteStep }
     }
@@ -86,7 +90,26 @@ final class SetupModel {
         return state.riskAccepted[profile.id]?.digest == risk.digest
     }
 
-    func isReady(_ profile: AppProfile) -> Bool { executableFound(for: profile) && riskAccepted(profile) }
+    /// What the game saved when it first started on this Mac; nil when its
+    /// profile needs nothing or the game is not found.
+    func firstRun(for profile: AppProfile) -> FirstRunCheck? {
+        _ = macFilesChecked
+        guard let firstRun = profile.firstRun, let folder = sourceFolder(for: profile), executableFound(for: profile) else { return nil }
+        return FirstRunCheck.check(firstRun, source: folder)
+    }
+
+    func firstRunDone(_ profile: AppProfile) -> Bool { firstRun(for: profile)?.isDone ?? true }
+
+    func recheckMacFiles() { macFilesChecked &+= 1 }
+
+    func isReady(_ profile: AppProfile) -> Bool { executableFound(for: profile) && riskAccepted(profile) && firstRunDone(profile) }
+
+    /// Opens the app the game comes from (Battle.net), or its download page.
+    func openGetApp(_ profile: AppProfile) {
+        guard let getApp = profile.getApp else { return }
+        if let path = getApp.path, FileManager.default.fileExists(atPath: path) { NSWorkspace.shared.open(URL(fileURLWithPath: path)) }
+        else { NSWorkspace.shared.open(getApp.url) }
+    }
 
     var installIsCurrent: Bool {
         guard let installed = state.installed, let source, let team = state.team, let device = state.device else { return false }
@@ -142,6 +165,7 @@ final class SetupModel {
         case .membership: return scannedTeams && state.team?.kind != .paid && !teams.contains { $0.kind == .paid }
         case .mac: return checkedMac
         case .iPad: return scannedDevices
+        case .game: return chosenProfiles.contains { executableFound(for: $0) && !firstRunDone($0) }
         default: return lastFailedJob(for: step) != nil
         }
     }
@@ -485,6 +509,8 @@ final class SetupModel {
         start(.copy(profile.id), title: "Copying \(profile.name)", phase: "Preparing…") { job in
             try await self.performCopy(profile, job: job)
             job.phase = "\(profile.name) is on your \(self.deviceWord)."
+            // From the library: show what the device has now.
+            if self.selection == .library { await self.readLibrary() }
         }
     }
 
@@ -494,6 +520,7 @@ final class SetupModel {
         guard let folder = sourceFolder(for: profile), executableFound(for: profile) else {
             throw ProfileError(message: "“\(profile.name)” was not found on this Mac.")
         }
+        guard firstRunDone(profile) else { throw FirstRunError(profile: profile.name) }
         let values = try environmentValues()
         try LocalEnv.write(values, to: source)
         guard let device = selectedDevice else { throw ProfileError(message: "Connect your \(deviceWord).") }
@@ -515,6 +542,8 @@ final class SetupModel {
     /// skips files that did not change.
     func updateGame(_ profile: AppProfile) {
         start(.copy(profile.id), title: "Updating \(profile.name)", phase: "Checking what changed…") { job in
+            // Before a build: a copy without the game's first-run settings would not start.
+            guard self.firstRunDone(profile) else { throw FirstRunError(profile: profile.name) }
             if !self.state.profiles.contains(profile.id) { self.state.profiles.append(profile.id) }
             let current = await self.hashes(of: [profile])[profile.id]
             let built = self.state.installed?.executables?[profile.id]
@@ -629,5 +658,14 @@ final class SetupModel {
               let tag = release["tag_name"] as? String, let page = (release["html_url"] as? String).flatMap(URL.init(string:)) else { return }
         let latest = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
         if latest.compare(current, options: .numeric) == .orderedDescending { update = (latest, page) }
+    }
+}
+
+/// A copy refused because the game never started on this Mac. Its wording is
+/// what the Diagnoser recognises, from here and from the copy helpers.
+struct FirstRunError: LocalizedError {
+    var profile: String
+    var errorDescription: String? {
+        "“\(profile)” has not been started on this Mac yet, so it has no region and language to copy. Start it once from Battle.net, then copy again."
     }
 }

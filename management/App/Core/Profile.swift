@@ -23,6 +23,13 @@ struct AppProfile: Identifiable, Hashable {
         var path: String?
         var steps: [String]
     }
+    /// A settings file the game writes the first time it starts on the Mac,
+    /// and the keys it must hold (FirstRun.swift, tools/first_run.py).
+    struct FirstRun: Hashable {
+        var settings: String        // relative to the source folder
+        var keys: [String]
+        var steps: [String]
+    }
     enum Origin: Hashable {
         case builtIn(folder: URL)      // profiles/<id>/ in the Tolkara source
         case imported(file: URL)       // a profile the user added
@@ -41,6 +48,7 @@ struct AppProfile: Identifiable, Hashable {
     var destination: String
     var installer: String?
     var getApp: GetApp?
+    var firstRun: FirstRun?
     var risk: Risk?
     var origin: Origin
 
@@ -110,11 +118,11 @@ enum ProfileParser {
         let workingDirectory = profile["workingDirectory"] as! String
         let hasRuntime = profile["runtime"] != nil
         let setup = profile["setup"]
-        var source: String?, installer: String?, getApp: AppProfile.GetApp?, risk: AppProfile.Risk?
+        var source: String?, installer: String?, getApp: AppProfile.GetApp?, firstRun: AppProfile.FirstRun?, risk: AppProfile.Risk?
         var destination = String(workingDirectory.split(separator: "/").first ?? "")
         if let setup {
             guard let setup = setup as? [String: Any] else { throw ProfileError(message: "setup must be an object.") }
-            let unknown = Set(setup.keys).subtracting(["source", "destination", "installer", "getApp", "risk"])
+            let unknown = Set(setup.keys).subtracting(["source", "destination", "installer", "getApp", "firstRun", "risk"])
             guard unknown.isEmpty else { throw ProfileError(message: "setup: unknown keys: \(unknown.sorted().joined(separator: ", ")).") }
             guard !hasRuntime else { throw ProfileError(message: "setup is not available for a profile with a runtime.") }
             if setup["source"] != nil {
@@ -139,6 +147,23 @@ enum ProfileParser {
                 guard steps.count <= 16 else { throw ProfileError(message: "setup.getApp.steps has more than 16 entries.") }
                 getApp = .init(name: try text(value["name"], "setup.getApp.name", limit: 100),
                                url: try https(value["url"], "setup.getApp.url"), path: path, steps: steps)
+            }
+            if let value = setup["firstRun"] {
+                guard let value = value as? [String: Any], Set(value.keys).isSubset(of: ["settings", "keys", "steps"]),
+                      value["settings"] != nil, value["keys"] != nil else {
+                    throw ProfileError(message: "setup.firstRun needs settings and keys, optionally steps.")
+                }
+                guard relative(value["settings"]), (value["settings"] as! String).count <= 1024 else {
+                    throw ProfileError(message: "setup.firstRun.settings must be a path inside the source folder.")
+                }
+                guard let keys = value["keys"] as? [String], (1...16).contains(keys.count),
+                      keys.allSatisfy({ $0.wholeMatch(of: /[A-Za-z0-9_]{1,64}/) != nil }) else {
+                    throw ProfileError(message: "setup.firstRun.keys must be a list of 1 to 16 setting names.")
+                }
+                guard value["steps"] == nil || value["steps"] is [Any] else { throw ProfileError(message: "setup.firstRun.steps must be a list.") }
+                let steps = try (value["steps"] as? [Any] ?? []).map { try text($0, "setup.firstRun.steps") }
+                guard steps.count <= 16 else { throw ProfileError(message: "setup.firstRun.steps has more than 16 entries.") }
+                firstRun = .init(settings: value["settings"] as! String, keys: keys, steps: steps)
             }
             if let value = setup["risk"] {
                 guard let value = value as? [String: Any], Set(value.keys).isSubset(of: ["summary", "history", "links"]) else {
@@ -174,7 +199,8 @@ enum ProfileParser {
         return AppProfile(id: profile["id"] as! String, name: profile["name"] as! String, workingDirectory: workingDirectory,
                           executable: profile["executable"] as! String, tested: profile["tested"] as? String,
                           notes: profile["notes"] as? String, runtimeFolder: profile["runtime"] as? String, hasSetup: setup != nil,
-                          source: source, destination: destination, installer: installer, getApp: getApp, risk: risk, origin: origin)
+                          source: source, destination: destination, installer: installer, getApp: getApp, firstRun: firstRun,
+                          risk: risk, origin: origin)
     }
 
     /// Built-in profiles (profiles/*/profile.json in the source) and imported ones.

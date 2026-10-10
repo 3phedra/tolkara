@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 """Copy your own installed WoW Forever (Classic beta) files into the Tolkara app's Documents.
 
-The executable and bundle resources are copied unchanged. Account settings and
-credentials are not copied. devicectl skips unchanged files on subsequent runs.
+The executable and bundle resources are copied unchanged. Of the settings, only
+the region and languages the game saved on this Mac are copied, never account
+settings or credentials. devicectl skips unchanged files on subsequent runs.
 """
 import argparse
 import hashlib
 import os
-import re
 from pathlib import Path
 import shutil
 import subprocess
 import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'tools'))
+import first_run
 import localenv
 BUNDLE_ID=localenv.bundle_id()
 
@@ -38,6 +39,9 @@ def main():
     executable=app/'MacOS/World of Warcraft'
     if not (source/executable).is_file(): parser.error('original Classic beta executable not found')
     if not args.skip_data and not (source/'Data').is_dir(): parser.error('game Data directory not found')
+    # Region and languages saved by the game's first start on this Mac, merged
+    # into the device's own settings (first_run.py); stops here when there are none.
+    first_run.stage(source,stage,'World of Warcraft',Path(__file__).parent,args.device,BUNDLE_ID)
     (stage/app/'MacOS').mkdir(parents=True,exist_ok=True)
     for name in ['.build.info','.flavor.info']:
         for parent in [Path('.'),Path('_classic_beta_')]:
@@ -55,14 +59,6 @@ def main():
     for item in sorted((source/executable).parent.iterdir()):
         if item.is_file() and item.name!=executable.name: shutil.copy2(item,stage/executable.parent/item.name)
     for name in ['Logs','WTF','Cache']: (stage/'_classic_beta_'/name).mkdir(exist_ok=True)
-    configuration=source/'_classic_beta_/WTF/Config.wtf'
-    if configuration.is_file():
-        allowed={'portal','textLocale','audioLocale'}
-        lines=[]
-        for line in configuration.read_text(errors='replace').splitlines():
-            match=re.fullmatch(r'SET (\w+) "([A-Za-z0-9_-]+)"',line)
-            if match and match[1] in allowed: lines.append(line)
-        if lines: (stage/'_classic_beta_/WTF/Config.wtf').write_text('\n'.join(lines)+'\n')
     def transfer(path,destination):
         subprocess.run(['xcrun','devicectl','device','copy','to','--device',args.device,
             '--domain-type','appDataContainer','--domain-identifier',BUNDLE_ID,

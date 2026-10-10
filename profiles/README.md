@@ -95,6 +95,11 @@ ignores it.
     "path": "/Applications/Example Store.app",
     "steps": ["Install Example from Example Store."]
   },
+  "firstRun": {
+    "settings": "Example/Config.txt",
+    "keys": ["portal", "textLocale"],
+    "steps": ["Start Example once from Example Store, choose your region, then quit."]
+  },
   "risk": {
     "summary": "Example is an online game. Your account could be suspended or banned; that risk is yours alone.",
     "history": [{ "when": "2020", "text": "What the publisher has said or done about compatibility layers." }],
@@ -117,6 +122,14 @@ ignores it.
 - `getApp` (optional): where to get the application. `url` must be https,
   and `path` is where its installer app usually lives. `steps` holds at most
   16 short instructions, and `**bold**` is allowed in them.
+- `firstRun` (optional): a settings file the application writes the first
+  time it starts on the Mac, relative to `source`, and the `keys` (1 to 16
+  names) it must then hold as `SET <key> "<value>"` lines, the form of World
+  of Warcraft's `WTF/Config.wtf`. Until every key has a value, the app shows
+  `steps` (at most 16, `**bold**` allowed) with a button that opens `getApp`,
+  checks again by itself, and does not copy the game. The app only reads the
+  file. The WoW helpers copy just these keys (`tools/first_run.py`), merged
+  into the device's own copy of the file.
 - `risk` (optional): the notice the user must accept before choosing an
   online game. Keep `summary` short, factual and plain. Each `history` entry
   must be backed by one of the `links` (https), and say no more than its

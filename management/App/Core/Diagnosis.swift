@@ -53,6 +53,10 @@ enum Diagnoser {
         (["Enrollment did not complete", "authorization-import-result", "Verified enrollment"],
          Diagnosis(title: "Connecting Tolkara to the developer service did not finish",
                    advice: "Unlock your iPad or iPhone, keep it connected and approve the prompt it shows, then try again.", step: nil)),
+        (["has not been started on this Mac"],
+         Diagnosis(title: "Start the game once on this Mac first",
+                   advice: "The game saves your region and language the first time Battle.net starts it. Without them it quits right after it starts on your iPad or iPhone. The Game step shows how; then copy again.",
+                   step: .game)),
         (["Operation timed out", "Connection reset by peer"],
          Diagnosis(title: "The connection to your device dropped", advice: "Use a cable, keep the device unlocked and awake, then try again.", step: nil)),
     ]

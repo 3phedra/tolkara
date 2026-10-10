@@ -41,6 +41,12 @@ struct LibraryView: View {
             ForEach(library.folders) { folder in
                 FolderSection(folder: folder) { removing = folder }
             }
+            if library.folders.contains(where: { $0.games.contains { $0.profile?.firstRun != nil } }) {
+                Text("Changed your region or language in Battle.net? Start the game once on this Mac and quit it, then choose **Copy Again** in the game's \(Image(systemName: "ellipsis.circle")) menu. Only the region and language are copied; the game's other settings on the \(model.deviceWord) stay.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             notOnDevice(library)
             HStack {
                 if model.readingLibrary { ProgressView().controlSize(.small) }
@@ -128,16 +134,32 @@ private struct GameRow: View {
         return MacCopy.of(profile.executable(inSource: folder))
     }
 
+    private var settings: DeviceSettings {
+        guard let profile = game.profile else { return .fine }
+        return DeviceSettings.compare(mac: model.firstRun(for: profile), device: game.firstRun)
+    }
+
     var body: some View {
         let mac = macCopy
         let outdated = mac?.isNewer(than: game) == true
+        let settings = settings
+        let busy = model.job?.isRunning == true || model.selectedDevice?.available != true
         VStack(alignment: .leading, spacing: 8) {
-            CheckRow(game.name, detail: detail(mac: mac, outdated: outdated), status: outdated ? .warning : .ok) {
+            CheckRow(game.name, detail: detail(mac: mac, outdated: outdated, settings: settings),
+                     status: outdated || !settings.isFine ? .warning : .ok) {
                 if let profile = game.profile, profile.hasSetup || profile.isImported {
                     if outdated {
+                        // Update copies the region and language too.
                         Button("Update") { model.updateGame(profile) }
                             .buttonStyle(.borderedProminent)
-                            .disabled(model.job?.isRunning == true || model.selectedDevice?.available != true)
+                            .disabled(busy)
+                    } else if case .copyAgain = settings {
+                        Button("Copy Again") { model.copy(profile) }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(busy)
+                    } else if case .startOnMac = settings, let getApp = profile.getApp {
+                        Button("Open \(getApp.name)") { model.openGetApp(profile) }
+                            .buttonStyle(.borderedProminent)
                     }
                     Menu {
                         Button("Copy Again") { model.copy(profile) }
@@ -160,8 +182,16 @@ private struct GameRow: View {
         }
     }
 
-    private func detail(mac: MacCopy?, outdated: Bool) -> String {
+    private func detail(mac: MacCopy?, outdated: Bool, settings: DeviceSettings) -> String {
         var parts: [String] = []
+        switch settings {
+        case .fine: break
+        case .startOnMac:
+            return "Its region and language are missing on the \(model.deviceWord), so it quits right after it starts. Start the game once from Battle.net on this Mac (choose your region, log in, quit), then choose Copy Again."
+        case .copyAgain(let changed):
+            parts.append(changed ? "Region or language changed on this Mac: Copy Again brings them over"
+                                 : "Its region and language are missing on the \(model.deviceWord): Copy Again brings them over")
+        }
         if let version = game.version { parts.append("Version \(version)") }
         if let played = game.lastLaunched { parts.append("played \(played.formatted(.relative(presentation: .named)))") }
         if outdated, let mac {

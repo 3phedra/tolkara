@@ -26,11 +26,18 @@ It copies only your region and language settings, not account settings, saved
 credentials or add-ons. Pass `--source` if the game is installed elsewhere, and
 `--skip-data` to refresh the client without copying `Data` again.
 
-The client needs a saved region and language. If the Mac installation has
-never saved them (no `portal`, `textLocale` and `audioLocale` in
-`_classic_era_/WTF/Config.wtf`), it opens a region picker that the AppKit
-adapter cannot show yet, and stops. Start the game once on the Mac, choose your
-region and languages, quit, and run the script again with `--skip-data`.
+**Start the game once on the Mac first.** The client needs the region and
+languages it saves the first time Battle.net starts it (`portal`, `textLocale`
+and `audioLocale` in `_classic_era_/WTF/Config.wtf`). A copy that never started on the
+Mac has none, and on the device the game then asks for a region in a window the
+AppKit adapter cannot show yet, so it quits within a second. Before you copy:
+in Battle.net choose the game and your region, click Play, wait for the
+character list, and quit the game. The script stops with these steps when the
+settings are missing (unless the device already has them). It sets only these
+three keys in the device's own `Config.wtf`, so graphics settings made on the
+device stay. To change region or language later, start the game once on the
+Mac again and run the script with `--skip-data` (in Tolkara Management:
+Library, then **Copy Again**). Tolkara Management checks this on its Game step.
 
 Open Tolkara, choose an execution mode if it asks, tap World of Warcraft Classic
 in the library (it appears once the files are copied), and log in inside the
