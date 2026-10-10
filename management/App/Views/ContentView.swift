@@ -57,6 +57,10 @@ struct ContentView: View {
             }
         }
         .navigationTitle("Tolkara Management")
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            // Back from Battle.net or the game: look at the game's files again.
+            model.recheckMacFiles()
+        }
         .task {
             // Unit tests host the app; they test the logic, not this Mac.
             guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }

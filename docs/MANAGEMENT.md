@@ -37,9 +37,9 @@ tools/package_management.sh
 | Developer Account | A paid Apple Developer Program membership. It looks at what Xcode already keeps on this Mac: the teams of signed-in accounts and the provisioning profiles Xcode downloaded. A paid membership's profiles last a year. A free Personal Team's last seven days, and free teams cannot sign the Network Extension capability Tolkara needs. No credentials are asked for and nothing is sent anywhere. | Explains how to sign in to Xcode or join the program. On a Mac that has never built an app, Xcode may not have saved the team yet even when signed in, so nothing is found: the page then asks for the Team ID (developer.apple.com › Account › Membership details), and the first build confirms it. The page keeps checking while it is open. |
 | This Mac | Xcode installed and set up (licence and components), XcodeGen, Python 3, free space. | Opens Xcode in the App Store. Installs XcodeGen through Homebrew, or from its official GitHub release if Homebrew is not installed. |
 | iPad or iPhone | Connected, trusts this Mac, Developer Mode on, and Xcode new enough for its iPadOS or iOS. The page refreshes by itself every few seconds. With several devices connected, you choose one. | Shows the Trust prompt on the device. Walks you through turning on Developer Mode. On an iPhone, says how the on-screen controls work. |
-| Game | A profile is chosen, the game is found on this Mac, and its account-risk notice is accepted. | Lists the profiles this app can set up, with WoW Forever first. Opens Battle.net or its download page. Finds the game in its usual place, or lets you choose its folder. Shows the version and size. Profiles can be added from a file or an https link. |
+| Game | A profile is chosen, the game is found on this Mac, it has started once on this Mac (when its profile says so), and its account-risk notice is accepted. | Lists the profiles this app can set up, with WoW Forever first. Opens Battle.net or its download page. Finds the game in its usual place, or lets you choose its folder. Shows the version and size. For WoW it checks that the game saved a region and language (`WTF/Config.wtf`), which happens the first time Battle.net starts it; without them the game quits right after it starts on the device. Until then the page shows what to do, opens Battle.net, and checks again by itself every few seconds and whenever you come back to the app. Profiles can be added from a file or an https link. |
 | Install Tolkara | Built for this team, iPad and source version, and enrolled for Developer service. | Writes `local.env`, runs `tools/install.sh`, then `tools/enroll.sh`. Shows what the build is doing, explains common failures in plain words and links to the step that fixes them. Shows when the signature expires. |
-| Copy Game | Copied to this iPad from the chosen folder. | Runs the profile's own `install.py`. An added profile has no script, so its folder is copied with `devicectl`. |
+| Copy Game | Copied to this iPad from the chosen folder. | Runs the profile's own `install.py`. An added profile has no script, so its folder is copied with `devicectl`. For WoW only the region and language are copied from `Config.wtf`, set in the device's own copy so its other settings stay; never an account name or password. A copy is refused while the game has not started on this Mac. |
 | Play | — | Opens Tolkara on the device, explains the VPN prompt, and saves `native-guest.log` from the device. |
 
 When Tolkara is already on the device under another bundle ID, for example
@@ -62,7 +62,13 @@ Mac is different.
   If the executable changed since Tolkara was built, Tolkara is built and
   installed again first, since the build is made for that executable. Then
   the game is copied; files that did not change are skipped.
-- **Copy Again** copies the game without rebuilding.
+- **Copy Again** copies the game without rebuilding. It is also how a new
+  region or language reaches the device: start the game once on this Mac,
+  quit it, then Copy Again. For WoW the library reads the region and language
+  on the device too. When they are missing there, for example after a copy
+  made before the game ever started on this Mac, or differ from this Mac's, the
+  game shows a **Copy Again** button, or **Open Battle.net** when this Mac has
+  none yet either.
 - **Remove from iPad…** in a folder's menu deletes that folder from the
   device after you confirm, along with every game in it. devicectl cannot
   delete files, so the app asks Tolkara on the device to do it

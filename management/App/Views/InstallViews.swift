@@ -75,6 +75,12 @@ struct CopyView: View {
                                     .disabled(model.job?.isRunning == true || model.selectedDevice?.available != true)
                             }
                         }
+                        if let check = model.firstRun(for: profile), check.isDone {
+                            Text("Also copied: the region and language the game saved on this Mac (\(check.summary)). After you change them in Battle.net, start the game once on this Mac and copy again.")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                         if let job = model.lastJobs[.copy(profile.id)] { JobPanel(job: job) }
                     }
                     .padding(6)

@@ -131,6 +131,7 @@ private struct ProfileSetup: View {
                     Divider()
                 }
                 found
+                firstRun
                 if let risk = profile.risk {
                     CheckRow("Account risk", detail: model.riskAccepted(profile) ? "You accepted the risk of playing online." : String(risk.summary.prefix(140)) + "…",
                              status: model.riskAccepted(profile) ? .ok : .warning) {
@@ -144,6 +145,13 @@ private struct ProfileSetup: View {
             .padding(6)
         } label: {
             Text(profile.name).font(.title3.weight(.semibold))
+        }
+        .task(id: waitingForFirstRun) {
+            // Notice by itself when the game was started and quit on this Mac.
+            while waitingForFirstRun && !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(3))
+                model.recheckMacFiles()
+            }
         }
         .task(id: model.sourceFolder(for: profile)) {
             size = nil
@@ -170,6 +178,42 @@ private struct ProfileSetup: View {
                      detail: folder.map { "Looked for \(profile.executableInSource) in \($0.path)." } ?? "Choose the folder the game is installed in.",
                      status: .waiting) {
                 Button("Choose Folder…", action: choose)
+            }
+        }
+    }
+
+    private var waitingForFirstRun: Bool { model.firstRun(for: profile)?.isDone == false }
+
+    /// The game must have started once on this Mac: it saves the region and
+    /// language there, and the copy on the device cannot start without them.
+    @ViewBuilder private var firstRun: some View {
+        if let check = model.firstRun(for: profile), let firstRun = profile.firstRun {
+            if check.isDone {
+                CheckRow("Started once on this Mac",
+                         detail: "Region and language saved: \(check.summary). They are copied with the game.",
+                         status: .ok)
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    CheckRow("Start the game once on this Mac",
+                             detail: check.fileExists
+                                ? "\(profile.name) has not saved a region and language on this Mac yet."
+                                : "\(profile.name) has never been started on this Mac.",
+                             status: .warning)
+                    Text("The game saves your region and language the first time Battle.net starts it. Without them it quits right after it starts on your \(model.deviceWord). Tolkara copies only these settings, never your account name or password.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    NumberedSteps(steps: firstRun.steps)
+                    HStack {
+                        if let getApp = profile.getApp {
+                            Button("Open \(getApp.name)") { model.openGetApp(profile) }
+                                .buttonStyle(.borderedProminent)
+                        }
+                        Button("Check Again") { model.recheckMacFiles() }
+                        ProgressView().controlSize(.small).padding(.leading, 4)
+                        Text("Checking by itself…").font(.callout).foregroundStyle(.secondary)
+                    }
+                }
             }
         }
     }

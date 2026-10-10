@@ -10,6 +10,8 @@ struct DeviceGame: Identifiable, Hashable {
     var executableSize: Int64?
     var version: String?        // the copy on the device
     var lastLaunched: Date?
+    /// The region and language settings on the device, for a profile that needs them.
+    var firstRun: FirstRunCheck?
 }
 
 /// A folder in Tolkara's Documents that holds games. Games can share one
@@ -29,8 +31,9 @@ struct DeviceLibrary: Equatable {
 }
 
 /// Reads what Tolkara has on the device: the folders in its Documents, the
-/// launcher's own list (Library/Application Support/Tolkara/apps.json) and
-/// each game's Info.plist for its version. Read only.
+/// launcher's own list (Library/Application Support/Tolkara/apps.json),
+/// each game's Info.plist for its version and, for a game that needs them,
+/// its region and language settings (FirstRun.swift). Read only.
 enum DeviceLibraryReader {
     /// Tolkara's own folders, never games.
     static let reserved: Set<String> = ["GuestModules", "GuestCompatibility", "GuestMirror", "LocalSigning"]
@@ -69,6 +72,10 @@ enum DeviceLibraryReader {
                 if let plist = game.infoPlist,
                    let data = await Devices.readFromApp("Documents/" + plist, bundleID: bundleID, device: device, xcode: xcode) {
                     game.version = version(fromInfoPlist: data)
+                }
+                if let firstRun = game.profile?.firstRun, let path = game.profile?.firstRunDevicePath {
+                    let data = await Devices.readFromApp(path, bundleID: bundleID, device: device, xcode: xcode)
+                    game.firstRun = FirstRunCheck.check(firstRun, deviceFile: data)
                 }
                 games.append(game)
             }
