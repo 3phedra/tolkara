@@ -1,7 +1,7 @@
 # World of Warcraft Classic (Classic Era)
 
 Tested with the macOS arm64 Classic Era client 1.15.x on an iPad Pro (M5); on
-an iPhone (experimental) it reaches the login screen. See
+an iPhone 15 Plus (experimental) it logs in and enters the world. See
 [COMPATIBILITY.md](../../COMPATIBILITY.md) for what works.
 
 You need your own installation made by the Battle.net app on a Mac, and your own

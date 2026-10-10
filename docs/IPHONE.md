@@ -1,8 +1,8 @@
 # iPhone (experimental)
 
 The same project builds for iPhone and iPad. On an iPhone the app runs in
-landscape only. Testing so far: an iPhone 16 Pro Max with iOS 27, with
-Developer service. Local signing and External JIT have not been tried on an
+landscape only. Testing so far: an iPhone 16 Pro Max and an iPhone 15 Plus
+(A16) with iOS 27, with Developer service. Local signing and External JIT have not been tried on an
 iPhone. See [COMPATIBILITY.md](../COMPATIBILITY.md) for what runs.
 
 ## Build and install
@@ -74,9 +74,11 @@ resolution first. Each upload is decoded once, on the thread that makes it.
 `TOLKARA_BC_FALLBACK` sets it (a profile's `environment`, or the development
 launch argument `--guest-environment=TOLKARA_BC_FALLBACK=on`): `auto`, the
 default, engages only without BC support; `on` forces it on a device with BC,
-to test it there; `off` never engages. As of 2026-10-10 the fallback has passed
-the Mac tests (decoders checked against the Mac GPU, every upload route with
-the fallback forced on) but has not yet run on an A16 iPhone.
+to test it there; `off` never engages. The fallback passes the Mac tests
+(decoders checked against the Mac GPU, every upload route with the fallback
+forced on). On 2026-10-10 an iPhone 15 Plus (A16) ran World of Warcraft Classic
+with it through login and into the world, then exited cleanly; a longer session,
+frame rate and memory use are still to be checked.
 
 ## Limits
 
