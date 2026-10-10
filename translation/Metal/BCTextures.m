@@ -228,6 +228,7 @@ static id textureViewSwizzle(id self, SEL selector, MTLPixelFormat format, MTLTe
 static id textureViewDescriptor(id self, SEL selector, id descriptor) RETAINED;
 static id textureViewDescriptor(id self, SEL selector, id descriptor) {
     CreateWith real = (CreateWith)superIMP(self, selector);
+#if !TARGET_OS_SIMULATOR   // the iOS Simulator SDK has no MTLTextureViewDescriptor
     if (@available(iOS 26.0, macOS 26.0, *)) {
         MTLTextureViewDescriptor *view = descriptor;
         unsigned long stored = insideTexture ? 0 : AKBCDecodedPixelFormat(view.pixelFormat);
@@ -237,6 +238,7 @@ static id textureViewDescriptor(id self, SEL selector, id descriptor) {
             return converted(result, view.pixelFormat);
         }
     }
+#endif
     return real(self, selector, descriptor);
 }
 
