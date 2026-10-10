@@ -579,6 +579,17 @@ xcrun clang -fobjc-arc -Wall -Wextra -Werror -Wno-deprecated-declarations -O1 -g
     -o build/emulation/test_managed_storage
 build/emulation/test_managed_storage --metal-managed-storage
 build/emulation/test_managed_storage
+# BC texture decoding, then the fallback for GPUs without BC on the Mac's own GPU:
+# auto (the Mac has BC: native, and the GPU checks the decoders), off, and forced on.
+"${CC[@]}" -Itranslation/Metal translation/Metal/BCDecode.c tests/test_bc_decode.c -o build/emulation/test_bc_decode
+build/emulation/test_bc_decode
+xcrun clang -fobjc-arc -Wall -Wextra -Werror -Wno-deprecated-declarations -O1 -g -fsanitize=address,undefined \
+    -Itranslation/AKSupport -Itranslation/Metal -Itests -framework Foundation -framework Metal \
+    translation/AKSupport/AKSupport.m translation/Metal/BCTextures.m translation/Metal/BCDecode.c tests/test_bc_textures.m \
+    -o build/emulation/test_bc_textures
+env -u TOLKARA_BC_FALLBACK build/emulation/test_bc_textures
+TOLKARA_BC_FALLBACK=off build/emulation/test_bc_textures
+TOLKARA_BC_FALLBACK=on build/emulation/test_bc_textures
 # The Metal adapter's device-function wrappers: the fixture re-exports Metal as akMetal does.
 xcrun clang -fobjc-arc -Wall -Wextra -Werror -O1 -g -dynamiclib -DAK_FIXTURE_LIBRARY -Itranslation/Metal \
     -framework Foundation -Wl,-reexport_framework,Metal tests/test_real_function.m -o build/emulation/libakMetalFixture.dylib
