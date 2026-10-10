@@ -19,6 +19,11 @@ final class SetupModel {
     // Membership
     var teams: [DeveloperTeam] = []
     var scannedTeams = false
+    /// Accounts signed in to Xcode, and Apple signing certificates on this Mac.
+    var xcodeAccounts = 0
+    var signingCertificates = 0
+    var teamProbeOpened = false
+    var teamProbeError: String?
 
     // This Mac
     var xcode: XcodeInstallation?
@@ -196,7 +201,10 @@ final class SetupModel {
     }
 
     func scanMembership() {
-        teams = MembershipScanner.scan()
+        let scan = MembershipScanner.scan()
+        teams = scan.teams
+        xcodeAccounts = scan.xcodeAccounts
+        signingCertificates = scan.signingCertificates
         if let team = state.team, let bundleID = state.effectiveBundleID {
             profileExpiry = MembershipScanner.expiry(team: team.id, bundleID: bundleID, in: MembershipScanner.provisioningProfiles())
         }
@@ -206,15 +214,38 @@ final class SetupModel {
             if chosen.kind != .unknown || fresh.kind != .unknown { state.team = fresh }
         } else if state.team == nil, let paid = teams.filter({ $0.kind == .paid }).first, teams.filter({ $0.kind == .paid }).count == 1 {
             state.team = paid
+        } else if state.team == nil, !teams.contains(where: { $0.kind == .paid }), scan.chosenInXcode.count == 1,
+                  let chosen = teams.first(where: { $0.id == scan.chosenInXcode[0] }), chosen.kind == .unknown {
+            // The user picked this team in Xcode for us; the first build confirms it.
+            state.team = chosen
+        }
+    }
+
+    /// Opens the Team Check project in Xcode, so the user can choose their
+    /// team in its Signing & Capabilities editor (see TeamProbe).
+    func openTeamProbe() {
+        guard let xcode else { return }
+        do {
+            let project = try TeamProbe.create()
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = true
+            NSWorkspace.shared.open([project], withApplicationAt: xcode.url, configuration: configuration) { _, error in
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated { self.teamProbeError = error?.localizedDescription }
+                }
+            }
+            teamProbeOpened = true
+            teamProbeError = nil
+        } catch {
+            teamProbeError = error.localizedDescription
         }
     }
 
     func chooseTeam(_ team: DeveloperTeam) { state.team = team }
 
     /// A team ID typed in by the user, checked for real by the first build.
-    func enterTeam(_ id: String) {
-        let id = id.trimmingCharacters(in: .whitespaces).uppercased()
-        guard id.wholeMatch(of: MembershipScanner.teamID) != nil else { return }
+    func enterTeam(_ typed: String) {
+        guard let id = MembershipScanner.teamID(fromTyped: typed) else { return }
         state.team = teams.first { $0.id == id } ?? DeveloperTeam(id: id, name: "Team \(id)", kind: .unknown, evidence: "Entered by you")
     }
 
@@ -577,6 +608,9 @@ final class SetupModel {
         state.sourceOverride = keep.0
         state.checkForUpdates = keep.1
         lastJobs = [:]
+        // The team chosen in the Team Check project is a choice too.
+        try? FileManager.default.removeItem(at: TeamProbe.folder)
+        teamProbeOpened = false
         selection = .welcome
     }
 

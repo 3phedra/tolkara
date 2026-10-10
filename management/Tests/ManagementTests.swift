@@ -160,6 +160,85 @@ final class MembershipTests: XCTestCase {
         XCTAssertNil(MembershipScanner.expiry(team: "ABCDE12345", bundleID: "missing", in: [old]))
     }
 
+    /// Xcode freshly signed in on a Mac that never signed anything: the
+    /// account is saved, its teams are not (seen in Tolkara 0.2.0's tutorial).
+    func testSignedInXcodeWithoutSavedTeams() {
+        let fresh: [String: Any] = ["DVTDeveloperAccountManagerAppleIDLists": ["IDE.Identifiers.Prod": [["identifier": "6111FB51-AC94-4D21-86C0-000000000000"]]]]
+        XCTAssertEqual(MembershipScanner.accountCount(fromXcodeDefaults: fresh), 1)
+        XCTAssertEqual(MembershipScanner.teams(fromXcodeDefaults: fresh), [])
+        let older: [String: Any] = ["DVTDeveloperAccountManagerAppleIDLists": ["IDE.Prod": [["username": "me@example.com"], ["username": "you@example.com"]],
+                                                                               "IDE.Identifiers.QA": [["identifier": "test"]]]]
+        XCTAssertEqual(MembershipScanner.accountCount(fromXcodeDefaults: older), 2)
+        XCTAssertEqual(MembershipScanner.accountCount(fromXcodeDefaults: [:]), 0)
+        XCTAssertEqual(MembershipScanner.accountCount(fromXcodeDefaults: ["DVTDeveloperAccountManagerAppleIDLists": ["IDE.Identifiers.Prod": []]]), 0)
+    }
+
+    func testCertificateTeam() {
+        let development = MembershipScanner.SigningCertificate(commonName: "Apple Development: Jane Doe (Q1W2E3R4T5)", teamID: "ABCDE12345",
+                                                               teamName: "Jane Doe", expires: now.addingTimeInterval(86400))
+        let team = MembershipScanner.team(fromCertificate: development, now: now)
+        // The team is the organizational unit, not the ID in the common name; its kind waits for the build.
+        XCTAssertEqual(team, DeveloperTeam(id: "ABCDE12345", name: "Jane Doe", kind: .unknown, evidence: "Signing certificate"))
+        var expired = development
+        expired.expires = now.addingTimeInterval(-1)
+        XCTAssertNil(MembershipScanner.team(fromCertificate: expired, now: now))
+        var other = development
+        other.commonName = "My Own Signing Certificate"
+        XCTAssertNil(MembershipScanner.team(fromCertificate: other, now: now))
+        var noTeam = development
+        noTeam.teamID = "Engineering"
+        XCTAssertNil(MembershipScanner.team(fromCertificate: noTeam, now: now))
+    }
+
+    func testCertificateValues() {
+        let field = { (oid: CFString, value: String) -> [String: Any] in
+            [kSecPropertyKeyLabel as String: oid as String, kSecPropertyKeyValue as String: value]
+        }
+        let values: [String: Any] = [
+            kSecOIDX509V1SubjectName as String: [kSecPropertyKeyValue as String: [
+                field("0.9.2342.19200300.100.1.1" as CFString, "Q1W2E3R4T5"), field(kSecOIDCommonName, "Apple Development: Jane Doe (Q1W2E3R4T5)"),
+                field(kSecOIDOrganizationalUnitName, "ABCDE12345"), field(kSecOIDOrganizationName, "Jane Doe"), field(kSecOIDCountryName, "US"),
+            ]],
+            kSecOIDX509V1ValidityNotAfter as String: [kSecPropertyKeyValue as String: NSNumber(value: now.timeIntervalSinceReferenceDate)],
+        ]
+        XCTAssertEqual(MembershipScanner.certificate(fromValues: values),
+                       MembershipScanner.SigningCertificate(commonName: "Apple Development: Jane Doe (Q1W2E3R4T5)", teamID: "ABCDE12345", teamName: "Jane Doe", expires: now))
+        XCTAssertNil(MembershipScanner.certificate(fromValues: [:]))
+    }
+
+    func testTeamProbe() async throws {
+        XCTAssertEqual(TeamProbe.teams(inProjectFile: TeamProbe.pbxproj), [])
+        let chosen = TeamProbe.pbxproj.replacingOccurrences(of: "CODE_SIGN_STYLE = Automatic;", with: "CODE_SIGN_STYLE = Automatic;\n\t\t\tDEVELOPMENT_TEAM = ABCDE12345;")
+        XCTAssertEqual(TeamProbe.teams(inProjectFile: chosen), ["ABCDE12345"])
+        XCTAssertEqual(TeamProbe.teams(inProjectFile: "DEVELOPMENT_TEAM = \"ZZZZZ12345\";\nDEVELOPMENT_TEAM = ZZZZZ12345;\nDEVELOPMENT_TEAM = \"\";"), ["ZZZZZ12345"])
+
+        // Xcode accepts the project as written, and creating it again keeps the user's choice.
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let project = try TeamProbe.create(in: folder)
+        let file = project.appendingPathComponent("project.pbxproj")
+        try chosen.write(to: file, atomically: true, encoding: .utf8)
+        try TeamProbe.create(in: folder)
+        XCTAssertEqual(TeamProbe.teams(inProjectFile: try String(contentsOf: file, encoding: .utf8)), ["ABCDE12345"])
+        let xcode = try XCTUnwrap(Toolchain.findXcode())
+        let list = try await Shell.check(xcode.developerDirectory + "/usr/bin/xcodebuild", ["-list", "-project", project.path],
+                                         environment: Toolchain.environment(xcode: xcode))
+        XCTAssertTrue(list.output.contains("Team Check"), list.output)
+        let settings = try await Shell.check(xcode.developerDirectory + "/usr/bin/xcodebuild", ["-showBuildSettings", "-project", project.path],
+                                             environment: Toolchain.environment(xcode: xcode))
+        XCTAssertTrue(settings.output.contains("DEVELOPMENT_TEAM = ABCDE12345"), settings.output)
+        XCTAssertTrue(settings.output.contains("CODE_SIGN_STYLE = Automatic"))
+    }
+
+    func testTypedTeamID() {
+        XCTAssertEqual(MembershipScanner.teamID(fromTyped: " abcde12345 "), "ABCDE12345")
+        XCTAssertEqual(MembershipScanner.teamID(fromTyped: "ABCDE 12345"), "ABCDE12345")
+        XCTAssertEqual(MembershipScanner.teamID(fromTyped: "Team ID: ABCDE12345"), "ABCDE12345")
+        XCTAssertNil(MembershipScanner.teamID(fromTyped: "ABCDE1234"))
+        XCTAssertNil(MembershipScanner.teamID(fromTyped: "ABCDE12345 ZZZZZ12345"))
+        XCTAssertNil(MembershipScanner.teamID(fromTyped: "ABCDE-12345"))
+    }
+
     func testMergeKeepsStrongest() {
         let merged = MembershipScanner.merge([
             DeveloperTeam(id: "ABCDE12345", name: "B", kind: .free, evidence: "x"),
@@ -168,6 +247,12 @@ final class MembershipTests: XCTestCase {
         ])
         XCTAssertEqual(merged.map(\.id), ["ABCDE12345", "ZZZZZ12345"])
         XCTAssertEqual(merged[0].kind, .paid)
+        // A team chosen in Xcode keeps the name its certificate gives it.
+        let named = MembershipScanner.merge([
+            DeveloperTeam(id: "ABCDE12345", name: "Team ABCDE12345", kind: .unknown, evidence: "Chosen in Xcode"),
+            DeveloperTeam(id: "ABCDE12345", name: "Jane Doe", kind: .unknown, evidence: "Signing certificate"),
+        ])
+        XCTAssertEqual(named.map(\.name), ["Jane Doe"])
     }
 }
 
