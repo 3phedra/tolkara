@@ -417,21 +417,23 @@ static BOOL AKResponderIsTextClient(NSResponder *responder) {
     [self touchButton:button pressed:YES];
     [self touchButton:button pressed:NO];
 }
-// The guest's own text field taking the first responder is where a hardware
-// keyboard would type. With no hardware keyboard attached, the on-screen one
-// appears, and the guest receives its keystrokes through the same path the
-// keyboard's keys already take. This is also what installs the controls on an
-// iPad that never turned them on, so a login field stays typeable.
+// A guest with a text client can need the on-screen keyboard (a login field).
+// Some games swap the first responder to the field itself; those get the
+// keyboard opened right away when a finger just touched. Games that keep one
+// text-capable responder for the whole session — World of Warcraft's engine
+// routes keys to its focused edit box itself — give no focus event, so for
+// them this is what puts the keyboard button on an iPad that never turned the
+// controls on, and the user opens the keyboard with it.
 - (void)guestFirstResponderChanged:(NSResponder *)responder {
     BOOL text = AKResponderIsTextClient(responder);
     static unsigned loggedResponders;
     if (loggedResponders < 12) { loggedResponders++; AKLog(@"guest first responder=%@ text=%d", responder ? NSStringFromClass(object_getClass(responder)) : @"(none)", text); }
     if (!text) return;
-    if (GCKeyboard.coalescedKeyboard) return;
-    // Only a field the finger just touched asks for the keyboard: a game that
-    // focuses one on its own would otherwise cover the screen unbidden.
-    if (NSProcessInfo.processInfo.systemUptime - _lastTouchTime > 2.5) return;
     if (!_touchControls && ![AKTouchControls explicitlyDisabled]) [self installTouchControls];
+    if (GCKeyboard.coalescedKeyboard) return;
+    // Only a field the finger just touched opens the keyboard by itself: a
+    // game that focuses one on its own would otherwise cover the screen.
+    if (NSProcessInfo.processInfo.systemUptime - _lastTouchTime > 2.5) return;
     [_touchControls showKeyboard];
 }
 - (void)touchButton:(unsigned)button pressed:(BOOL)pressed {
