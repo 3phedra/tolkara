@@ -1,0 +1,95 @@
+name: Sync upstream, PRs and wolkara
+
+# Merges new commits from tolkara/tolkara (main and the two pull requests
+# until they land upstream) and from fJavierLasso/wolkara into
+# build/both-worlds. Recurring conflicts are resolved from the recorded
+# resolutions in ci/rr-cache; a genuinely new conflict fails the run without
+# touching the branch. Builds and device installs stay on the local VM
+# pipeline (macOS runners are not free; this job only merges).
+
+on:
+  schedule:
+    - cron: '17 */2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: build/both-worlds
+          fetch-depth: 0
+
+      - name: Prepare git and recorded resolutions
+        run: |
+          git config user.name "tolkara-sync"
+          git config user.email "tolkara-sync@users.noreply.github.com"
+          git config rerere.enabled true
+          git config rerere.autoupdate true
+          mkdir -p .git/rr-cache
+          if [ -d ci/rr-cache ]; then
+            for entry in ci/rr-cache/*/; do
+              cp -r "$entry" .git/rr-cache/
+            done
+          fi
+          git remote add upstream https://github.com/tolkara/tolkara.git
+
+      - name: Fetch sources
+        run: |
+          git fetch origin build/both-worlds
+          git fetch upstream main
+          git fetch upstream '+refs/pull/5/head:refs/remotes/upstream/pr/5' '+refs/pull/6/head:refs/remotes/upstream/pr/6'
+          git fetch https://github.com/fJavierLasso/wolkara.git '+main:refs/remotes/wolkara/main'
+
+      - name: Merge what is new
+        id: merge
+        run: |
+          changed=0
+          for ref in upstream/main upstream/pr/5 upstream/pr/6 wolkara/main; do
+            if ! git log --oneline "$ref" --not HEAD | grep -q .; then
+              echo "$ref: nothing new"
+              continue
+            fi
+            echo "merging $ref"
+            if git merge --no-edit "$ref" >/dev/null; then
+              changed=1
+            else
+              git rerere || true
+              if [ -z "$(git diff --name-only --diff-filter=U)" ] && [ -f .git/MERGE_HEAD ]; then
+                git add -A
+                git commit --no-edit -q
+                echo "$ref: conflicts auto-resolved from recorded resolutions"
+                changed=1
+              else
+                echo "::error::Merge of $ref conflicts in: $(git diff --name-only --diff-filter=U | tr '\n' ' ')"
+                echo "Resolve locally: git fetch origin build/both-worlds, merge $ref, commit, push; the next run continues."
+                git merge --abort
+                exit 1
+              fi
+            fi
+          done
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+
+      - name: Save new recorded resolutions
+        if: steps.merge.outputs.changed == '1'
+        run: |
+          mkdir -p ci/rr-cache
+          for entry in .git/rr-cache/*/; do
+            cp -r "$entry" ci/rr-cache/
+          done
+          git add ci/rr-cache
+          if ! git diff --cached --quiet; then
+            git commit -m "sync: update recorded conflict resolutions"
+          fi
+
+      - name: Push merged branch
+        if: steps.merge.outputs.changed == '1'
+        run: git push origin HEAD:build/both-worlds
