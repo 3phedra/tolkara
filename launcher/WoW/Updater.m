@@ -103,7 +103,7 @@ static BOOL SameBuild(NSDictionary *a,NSDictionary *b) {
     // (its own download of one then fails and the client asserts); refuse to
     // write rather than drop the key or the CDN server list.
     if(!TKWoWHashValid(install[1]))return Fail(error,@"Invalid install key.");
-    if(!sizes[1].length || [sizes[1] rangeOfCharacterFromSet:NSCharacterSet.decimalDigitCharacterSet.invertedSet].location!=NSNotFound)return Fail(error,@"Invalid install manifest size.");
+    if(![sizes[1] length] || [sizes[1] rangeOfCharacterFromSet:NSCharacterSet.decimalDigitCharacterSet.invertedSet].location!=NSNotFound)return Fail(error,@"Invalid install manifest size.");
     NSString *cdnHost=[NSURL URLWithString:plan[@"cdn"]].host;
     if(!cdnHost.length)return Fail(error,@"Invalid CDN location.");
     NSString *cdnServers=[NSString stringWithFormat:@"http://%@/?maxhosts=4&fallback=1 https://%@/?maxhosts=4&fallback=1",cdnHost,cdnHost];
