@@ -176,6 +176,12 @@ static id log_exception(id exception) {
 // Opt-in crash diagnostics use only a preopened fd and raw memory reads in the
 // signal handler. Chain the client's handler unchanged after saving evidence.
 static int signal_log_fd=-1;
+static bool native_sample_requested(void) {
+    if([NSProcessInfo.processInfo.arguments containsObject:@"--sample-native"]) return true;
+    // A file flag arms sampling for launches iOS starts itself (Home Screen).
+    return [NSFileManager.defaultManager fileExistsAtPath:
+        [NSHomeDirectory() stringByAppendingPathComponent:@"Documents/sample-native"]];
+}
 static struct sigaction guest_signal_actions[NSIG];
 static void signal_hex(const char *label, uintptr_t value) {
     char buffer[128]; size_t n=0; while(label[n] && n<96) { buffer[n]=label[n]; n++; }
@@ -1878,7 +1884,7 @@ bool ng_initialize(const char *path, const char *frameworks, const char *library
             LOG("[native] virtual-memory budget of %llu MB for large reservations (TOLKARA_VM_BUDGET_MB; experimental)\n",megabytes);
         }
     }
-    if([NSProcessInfo.processInfo.arguments containsObject:@"--sample-native"]) signal_log_fd=open([[NSHomeDirectory() stringByAppendingPathComponent:@"Documents/native-signal.log"] fileSystemRepresentation],O_WRONLY|O_CREAT|O_TRUNC,0600);
+    if(native_sample_requested()) signal_log_fd=open([[NSHomeDirectory() stringByAppendingPathComponent:@"Documents/native-signal.log"] fileSystemRepresentation],O_WRONLY|O_CREAT|O_TRUNC,0600);
     shader_wait_pending=dlsym(RTLD_DEFAULT,"AKShaderWaitPending");
     for (size_t i=0;i<carried.count;i++) {
         GuestLibrary *library=&carried.libraries[i];
@@ -2037,7 +2043,7 @@ bool ng_initialize(const char *path, const char *frameworks, const char *library
                 startup_count(i+1);
             }
             LOG("[native] all %llu initializers returned; entering original main=%p\n",(unsigned long long)guest.image.initializer_count,(void *)(guest.image.entry+guest.slide));
-            if([NSProcessInfo.processInfo.arguments containsObject:@"--sample-native"]) schedule_native_sample(mach_thread_self(),1);
+            if(native_sample_requested()) schedule_native_sample(mach_thread_self(),1);
             startup_begin("the app is running its own startup",0);
             int result=((int (*)(int,const char **,const char **,const char **))(guest.image.entry+guest.slide))(argc,argv,env,apple);
             LOG("[native] original main returned %d\n",result);
