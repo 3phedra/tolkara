@@ -227,7 +227,8 @@ static BOOL PreparedFromOutside(void) { return hd_may_run_unsigned_code() || ng_
     // tools/: keep its plain status screen and behaviour.
     BOOL plain=YES;
     for(NSUInteger i=1;i<arguments.count;i++) if(![arguments[i] hasPrefix:TKExecutionModeArgumentPrefix] &&
-        ![arguments[i] isEqualToString:TKExecutionModeSaveArgument]) plain=NO;
+        ![arguments[i] isEqualToString:TKExecutionModeSaveArgument] &&
+        ![arguments[i] isEqualToString:@"--sample-native"]) plain=NO;
     if (plain) {
         self.uiSession=YES;
         self.libraryController=[[TKLibraryViewController alloc] initWithLibrary:self.library];
