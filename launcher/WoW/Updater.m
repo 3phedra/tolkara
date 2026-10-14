@@ -88,7 +88,7 @@ static BOOL SameBuild(NSDictionary *a,NSDictionary *b) {
     NSData *old=BuildInfo(root,error);if(!old)return NO;
     NSArray *rows=old.length?TKWoWTable(old,error):@[];if(!rows)return NO;
     NSString *header=old.length?[[[NSString alloc] initWithData:old encoding:NSUTF8StringEncoding] componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet].firstObject:
-        @"Branch!STRING:0|Active!DEC:1|Build Key!HEX:16|CDN Key!HEX:16|Install Key!HEX:16|IM Size!DEC:4|CDN Path!STRING:0|CDN Hosts!STRING:0|Tags!STRING:0|Armadillo!STRING:0|Last Activated!STRING:0|Version!STRING:0|Keyring!HEX:16|KeyService!STRING:0|Product!STRING:0";
+        @"Branch!STRING:0|Active!DEC:1|Build Key!HEX:16|CDN Key!HEX:16|Install Key!HEX:16|IM Size!DEC:4|CDN Path!STRING:0|CDN Hosts!STRING:0|CDN Servers!STRING:0|Tags!STRING:0|Armadillo!STRING:0|Last Activated!STRING:0|Version!STRING:0|KeyRing!HEX:16|Product!STRING:0";
     NSMutableArray *keys=[NSMutableArray new];for(NSString *column in [header componentsSeparatedByString:@"|"])[keys addObject:[column componentsSeparatedByString:@"!"][0]];
     for(NSString *required in @[@"Product",@"Active",@"Build Key",@"CDN Key",@"Version"])if(![keys containsObject:required])return Fail(error,@"Unsupported installation metadata columns.");
     NSMutableArray *updated=[NSMutableArray new];NSMutableDictionary *entry=nil;
@@ -99,9 +99,18 @@ static BOOL SameBuild(NSDictionary *a,NSDictionary *b) {
     if(!entry)entry=[NSMutableDictionary new];
     NSDictionary *v=plan[@"version"]; NSArray *install=Words(plan[@"config"][@"install"]), *sizes=Words(plan[@"config"][@"install-size"]);
     if(install.count!=2 || sizes.count!=2)return Fail(error,@"Invalid install metadata.");
+    // A degraded file here leaves the client unable to locate its patch index
+    // (its own download of one then fails and the client asserts); refuse to
+    // write rather than drop the key or the CDN server list.
+    if(!TKWoWHashValid(install[1]))return Fail(error,@"Invalid install key.");
+    if(!sizes[1].length || [sizes[1] rangeOfCharacterFromSet:NSCharacterSet.decimalDigitCharacterSet.invertedSet].location!=NSNotFound)return Fail(error,@"Invalid install manifest size.");
+    NSString *cdnHost=[NSURL URLWithString:plan[@"cdn"]].host;
+    if(!cdnHost.length)return Fail(error,@"Invalid CDN location.");
+    NSString *cdnServers=[NSString stringWithFormat:@"http://%@/?maxhosts=4&fallback=1 https://%@/?maxhosts=4&fallback=1",cdnHost,cdnHost];
     [entry addEntriesFromDictionary:@{@"Product":plan[@"product"],@"Branch":plan[@"region"],@"Active":@"1",
         @"Build Key":v[@"BuildConfig"],@"CDN Key":v[@"CDNConfig"],@"Version":v[@"VersionsName"],
-        @"Install Key":install[1],@"IM Size":sizes[1],@"CDN Path":@"tpr/wow",@"CDN Hosts":[NSURL URLWithString:plan[@"cdn"]].host,
+        @"Install Key":install[1],@"IM Size":sizes[1],@"CDN Path":@"tpr/wow",@"CDN Hosts":cdnHost,
+        @"CDN Servers":cdnServers,@"KeyRing":v[@"KeyRing"]?:@"",
         @"Tags":[NSString stringWithFormat:@"OSX arm64 %@ %@ speech?:OSX arm64 %@ %@ text?",[plan[@"region"] uppercaseString],plan[@"locale"],[plan[@"region"] uppercaseString],plan[@"locale"]]}];
     [updated addObject:entry];NSMutableString *text=[[header stringByAppendingString:@"\n"] mutableCopy];
     for(NSDictionary *row in updated) {
