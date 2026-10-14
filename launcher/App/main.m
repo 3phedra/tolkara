@@ -1183,6 +1183,22 @@ static BOOL PreparedFromOutside(void) { return hd_may_run_unsigned_code() || ng_
 }
 @end
 
+// The app expects Documents to be a directory. A crash report or a failed
+// external file transfer can leave a plain file in its place, after which
+// every path underneath it fails; restore the directory before anything else.
+static void RestoreDocumentsDirectoryIfReplaced(void) {
+    NSString *documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    if (!documents.length) return;
+    NSDictionary *attributes = [NSFileManager.defaultManager attributesOfItemAtPath:documents error:NULL];
+    if (!attributes || [attributes[NSFileType] isEqualToString:NSFileTypeDirectory]) return;
+    [NSFileManager.defaultManager removeItemAtPath:documents error:NULL];
+    [NSFileManager.defaultManager createDirectoryAtPath:documents withIntermediateDirectories:YES attributes:nil error:NULL];
+    NSLog(@"[host] Documents was not a directory; it was replaced with an empty one.");
+}
+
 int main(int argc, char *argv[]) {
-    @autoreleasepool { return UIApplicationMain(argc, argv, nil, NSStringFromClass(AKHostAppDelegate.class)); }
+    @autoreleasepool {
+        RestoreDocumentsDirectoryIfReplaced();
+        return UIApplicationMain(argc, argv, nil, NSStringFromClass(AKHostAppDelegate.class));
+    }
 }
