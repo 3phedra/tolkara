@@ -6,8 +6,13 @@
 - (void)touchTapAt:(CGPoint)point button:(unsigned)button;
 - (void)touchButton:(unsigned)button pressed:(BOOL)pressed;
 - (void)touchInsertText:(NSString *)text;
+// Explicit user-requested replacement of the focused field; no text is read.
+- (void)touchReplaceText:(NSString *)text;
 - (void)touchSpecialKey:(unsigned short)code characters:(NSString *)characters;
 - (void)touchTrackpadChanged:(BOOL)enabled;
+- (void)touchKeyboardVisibilityChanged:(BOOL)visible;
+- (void)touchGamepadPreferenceChanged:(BOOL)enabled;
+- (void)touchControlSettings;
 @end
 
 // Optional: the launcher's On-Screen Controls switch stores this Boolean.
@@ -16,14 +21,17 @@
 // off, unless the switch was explicitly turned off.
 extern NSString *const AKTouchControlsDefaultsKey;   // "AKTouchControls"
 
-// Lives above the guest layer, but only the two buttons intercept hit testing.
-// The host supplies direct touches; hardware mouse input stays on its old path.
+// Toolbar above the guest layer, with a separate native draft panel above
+// the keyboard. The host supplies direct touches; hardware mouse input stays
+// on its old path, and only the buttons intercept hit testing.
 @interface AKTouchControls : UIView <UIKeyInput>
 @property (class, nonatomic, readonly) BOOL enabled;
 // The switch was set to "off" by hand: do not install the controls on demand.
 @property (class, nonatomic, readonly) BOOL explicitlyDisabled;
 @property (nonatomic, weak) id<AKTouchControlsDelegate> delegate;
 @property (nonatomic) BOOL trackpadEnabled;
+@property (nonatomic, readonly) BOOL gamepadEnabled;
+- (void)setGamepadVisible:(BOOL)visible;
 @property (nonatomic, readonly) BOOL keyboardVisible;
 - (void)processTouches:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event;
 - (void)cancelTouches;

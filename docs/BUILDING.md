@@ -1,5 +1,8 @@
 # Building and installing Tolkara
 
+For the WoW-focused Wolkara app, start with [GETTING_STARTED.md](GETTING_STARTED.md).
+This page covers the shared engine and its advanced development modes.
+
 Tolkara is meant to be built by you: you build it, you sign it with your own
 Apple developer identity, and it runs on your own iPad or iPhone. (External
 JIT is the one exception to the signing: you build it unsigned and your
@@ -67,7 +70,8 @@ xcrun devicectl list devices
 - `TOLKARA_PROFILE` (optional): your own profile, if it is not in
   [`profiles/`](../profiles). Every profile there is included automatically.
 - `TOLKARA_MODE` (optional): `developer-service` or `local-signing`, see step 4.
-  Without it the app asks on first launch.
+  Used by explicit development runs. Wolkara's ordinary integrated launch
+  selects Developer service without a picker.
 - `TOLKARA_EXPERIMENTAL_ADAPTERS` (optional, experimental): adapters marked
   `experimental` under `translation/` take part only when named here, separated
   by `:`. Today `GameController` (reports no controllers, real gamepads
@@ -84,9 +88,18 @@ signing under Signing & Capabilities.
 To build from Xcode instead, run `tools/generate.sh`, open
 `Tolkara.xcodeproj` and run the **Tolkara** scheme on your device. The scheme
 starts the app without Xcode's debugger, which must not stay attached to a
-game; keep **Debug executable** off. Such a build carries the generic
-compatibility libraries (as `NATIVE_GUEST_SHIMS=GENERIC tools/install.sh`
-would). `tools/generate.sh` rewrites the project, so keep personal settings in
+game; keep **Debug executable** off, and keep **Run > Diagnostics > Metal API
+Validation** off as well (the shared scheme disables it; regenerate it with
+`tools/generate.sh` after updating an older checkout). A reported Xcode-only
+startup failure completed memory preparation, then raised an `isLowPower`
+exception on the iOS Metal device; Xcode's extra Metal debug wrapper is the
+suspected cause, and an ordinary icon launch worked. This changes Xcode's
+launch diagnostics, not the game's files or the memory-preparation route.
+Such a build carries the generic compatibility libraries (as
+`NATIVE_GUEST_SHIMS=GENERIC tools/install.sh` would); `tools/install.sh`
+retains its application-specific default, and
+`NATIVE_GUEST_SHIMS=GENERIC` builds without a particular `GUEST_EXE`.
+`tools/generate.sh` rewrites the project, so keep personal settings in
 `local.env`.
 
 ## 3. Build and install
@@ -112,11 +125,11 @@ Settings > General > VPN & Device Management.
 
 ## 4. Set up your execution mode
 
-Tolkara runs the application's code in one of three ways; the README's
-[Three ways to run code](../README.md#three-ways-to-run-code) compares them. Choose
-one. The app asks on first launch unless `TOLKARA_MODE` preselected a mode, and
-**Execution mode…** in the app changes it later. You only need to set up the
-mode you use.
+The shared engine has three execution modes, described below.
+Wolkara uses Developer service in the integrated target and External JIT in the
+diagnostics/sideload target. There is no normal startup-mode picker. The other
+routes remain available to explicit development launches; set up only the
+route used by your build.
 
 ### Developer service: enrol local authorization (once)
 
@@ -252,12 +265,11 @@ profile: see [profiles/README.md](../profiles/README.md).
 
 ## 6. Run
 
-Open Tolkara on the iPad, choose the execution mode if it asks, and tap the
-app in the library. With Developer service, keep Tolkara in the foreground
-while it prepares memory (about 3 MB per second: 33 seconds for Heroes III). One app can start per
-session: to start another, open Tolkara again. When an app closes cleanly,
-Tolkara ends itself after a short note, so the next tap on its icon opens the
-library ready to start another app.
+Open Wolkara, choose the WoW edition and tap Play after installation/updates
+finish. With Developer service, keep the app in the foreground while it prepares
+memory. This still happens on each new process. One game can start per session;
+when it closes, reopen Wolkara for another session. The general library/import
+workflow described above is retained for internal development runs only.
 Runtime output goes to `Documents/native-guest.log`; the Diagnostics menu
 (stethoscope) shows it and the other logs, and holds the development checks.
 
