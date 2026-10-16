@@ -419,6 +419,11 @@ static UIStackView *Stack(NSArray<UIView *> *views, CGFloat spacing) {
             (void)a; [self repairInstallation];
         }]];
     }
+    if(!_busy && !_starting && !_sessionUsed && [self hasDownloadedFilesForProduct:_product]) {
+        [sheet addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"Remove downloaded files for %@",_product[@"name"]] style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a) {
+            (void)a; [self removeInstallation];
+        }]];
+    }
     [sheet addAction:[UIAlertAction actionWithTitle:@"Diagnostics and logs" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
         (void)a; [self diagnostics];
     }]];
@@ -433,8 +438,56 @@ static UIStackView *Stack(NSArray<UIView *> *views, CGFloat spacing) {
     }]];
     [self presentSheet:sheet anchor:nil];
 }
-- (UILabel *)startupStatusLabel { [self loadViewIfNeeded]; return _detailLabel; }
-- (void)beginStartup {
+- (NSString *)installationRoot {
+    return [NSHomeDirectory() stringByAppendingPathComponent:@"Documents/World of Warcraft"];
+}
+- (BOOL)hasDownloadedFilesForProduct:(NSDictionary *)product {
+    if(!product)return NO;
+    NSFileManager *fm=NSFileManager.defaultManager;
+    NSString *root=[self installationRoot];
+    if([fm fileExistsAtPath:[root stringByAppendingPathComponent:product[@"folder"]]])return YES;
+    NSString *work=[root.stringByDeletingLastPathComponent stringByAppendingPathComponent:@".tolkara-updates"];
+    NSString *prefix=[product[@"id"] stringByAppendingString:@"-"];
+    for(NSString *entry in [fm contentsOfDirectoryAtPath:work error:NULL]) if([entry hasPrefix:prefix])return YES;
+    return NO;
+}
+- (void)removeInstallation {
+    NSDictionary *product=_product;
+    UIAlertController *confirm=[UIAlertController alertControllerWithTitle:[NSString stringWithFormat:@"Remove %@ files?",product[@"name"]]
+        message:@"This deletes this edition's downloaded game files from the iPad, including its in-game settings. Other editions and their files are not touched." preferredStyle:UIAlertControllerStyleAlert];
+    [confirm addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [confirm addAction:[UIAlertAction actionWithTitle:@"Remove" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+        (void)action; [self performRemovalOfProduct:product];
+    }]];
+    [self presentViewController:confirm animated:YES completion:nil];
+}
+- (void)performRemovalOfProduct:(NSDictionary *)product {
+    [self cancel]; _busy=YES; [self render];
+    NSString *root=[self installationRoot];
+    NSString *work=[root.stringByDeletingLastPathComponent stringByAppendingPathComponent:@".tolkara-updates"];
+    NSString *folderPath=[root stringByAppendingPathComponent:product[@"folder"]];
+    NSString *prefix=[product[@"id"] stringByAppendingString:@"-"];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{
+        NSFileManager *fm=NSFileManager.defaultManager; NSError *failure=nil;
+        // Only this edition's folder and this edition's staged downloads are
+        // removed. The shared Data pool and every other edition stay in place.
+        if([fm fileExistsAtPath:folderPath]) [fm removeItemAtPath:folderPath error:&failure];
+        for(NSString *entry in [fm contentsOfDirectoryAtPath:work error:NULL])
+            if([entry hasPrefix:prefix])[fm removeItemAtPath:[work stringByAppendingPathComponent:entry] error:NULL];
+        dispatch_async(dispatch_get_main_queue(),^{
+            [[NSUserDefaults standardUserDefaults] removeObjectForKey:[@"WoWInstallRequested." stringByAppendingString:product[@"id"]]];
+            [[NSUserDefaults standardUserDefaults] removeObjectForKey:[@"WoWRepairRequested." stringByAppendingString:product[@"id"]]];
+            self->_busy=NO;
+            if(failure) {
+                UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"Could not remove all files" message:failure.localizedDescription preferredStyle:UIAlertControllerStyleAlert];
+                [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+                [self presentViewController:alert animated:YES completion:nil];
+            }
+            [self refresh];
+        });
+    });
+}
+- (UILabel *)startupStatusLabel { [self loadViewIfNeeded]; return _detailLabel; }- (void)beginStartup {
     [self loadViewIfNeeded];
     [self cancel]; _starting=YES; _startupFailure=nil;
     _detailLabel.text=@"Preparing to launch. Keep this app open.";
