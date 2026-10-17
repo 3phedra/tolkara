@@ -489,7 +489,7 @@ static int CompareRanges(const void *a,const void *b) {
             if(!requested[i].size || requested[i].size>256*1024*1024) { if(error)*error=TKWoWError(@"Invalid download object size.");return NO; }
         }
     }
-    qsort(entries,count,sizeof(*entries),CompareRanges);NSError *failure=nil;
+    qsort(entries,count,sizeof(*entries),CompareRanges);__block NSError *failure=nil;
     @try {
     // Work list: grouped archive ranges (up to 16 MiB) and single objects.
     NSMutableArray<NSDictionary *> *items=[NSMutableArray new];
