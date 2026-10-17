@@ -164,12 +164,12 @@ static UIStackView *Stack(NSArray<UIView *> *views, CGFloat spacing) {
     _columns.alignment=horizontal?UIStackViewAlignmentTop:UIStackViewAlignmentFill;
 }
 - (void)viewDidAppear:(BOOL)animated { [super viewDidAppear:animated]; if (!_busy && !_sessionUsed && !_starting) [self inspectLocal]; }
-- (void)viewDidDisappear:(BOOL)animated { [super viewDidDisappear:animated]; [self cancel]; }
+- (void)viewDidDisappear:(BOOL)animated { [super viewDidDisappear:animated]; if(!_updating)[self cancel]; }
 - (void)foreground:(NSNotification *)note {
     (void)note;
     if (self.isViewLoaded && self.view.window && self.navigationController.topViewController==self && !_busy && !_sessionUsed && !_starting) [self inspectLocal];
 }
-- (void)background:(NSNotification *)note { (void)note; [self cancel]; }
+- (void)background:(NSNotification *)note { (void)note; if(!_updating)[self cancel]; }
 - (void)cancel { [_client cancel]; _client=nil; _generation++; _busy=NO; }
 - (void)setExecutionMode:(TKExecutionMode)mode { _executionMode=mode; if (self.isViewLoaded) [self render]; }
 - (void)setSessionUsed:(BOOL)used { _sessionUsed=used; if (used) [self cancel]; if (self.isViewLoaded) [self render]; }
@@ -287,6 +287,9 @@ static UIStackView *Stack(NSArray<UIView *> *views, CGFloat spacing) {
 }
 - (void)render {
     if (!self.isViewLoaded) return;
+    // Keep the screen on while an update runs so the system does not suspend
+    // the decode/store work between background download completions.
+    UIApplication.sharedApplication.idleTimerDisabled=_updating;
     [self configureButton:_editionButton title:[_product[@"name"] stringByAppendingString:@"  ▾"] filled:NO];
     _editionButton.contentHorizontalAlignment=UIControlContentHorizontalAlignmentLeading;
     _editionButton.backgroundColor=[UIColor colorWithWhite:1 alpha:0.055]; _editionButton.layer.cornerRadius=10;

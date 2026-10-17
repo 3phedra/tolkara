@@ -2,9 +2,14 @@
 #import "Manifest.h"
 
 NS_ASSUME_NONNULL_BEGIN
+// Identifier of the app-wide background download session. The app delegate
+// forwards application:handleEventsForBackgroundURLSession:completionHandler:
+// for this identifier so pending downloads are adopted after a relaunch.
+extern NSString *const TKWoWBackgroundSessionIdentifier;
 // Synchronous, bounded requests: call on a worker queue, never UIKit's main thread.
 // A client performs one operation at a time. cancel is safe from another thread.
 @interface TKWoWClient : NSObject
++ (void)handleBackgroundEventsWithCompletion:(void (^)(void))completion;
 - (void)cancel;
 @property(nonatomic, readonly) BOOL cancelled;
 @property(nonatomic, copy, nullable) void (^progress)(NSString *phase, uint64_t done, uint64_t total);

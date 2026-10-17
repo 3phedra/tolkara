@@ -9,6 +9,7 @@
 #import "ExecutionMode.h"
 #import "LibraryViewController.h"
 #import "../WoW/WoWViewController.h"
+#import "../WoW/Client.h"
 #import "LaunchProgressView.h"
 #import "NativeGuest.h"
 #import "SignedFileProbe.h"
@@ -1180,6 +1181,13 @@ static BOOL PreparedFromOutside(void) { return hd_may_run_unsigned_code() || ng_
     UISceneConfiguration *c = [[UISceneConfiguration alloc] initWithName:@"Default" sessionRole:s.role];
     c.delegateClass = AKHostSceneDelegate.class;
     return c;
+}
+// The system relaunches the app to deliver completions of downloads that kept
+// running in the background; hand the session over so it can drain its events.
+- (void)application:(UIApplication *)application handleEventsForBackgroundURLSession:(NSString *)identifier completionHandler:(void (^)(void))completionHandler {
+    (void)application;
+    if ([identifier isEqualToString:TKWoWBackgroundSessionIdentifier]) [TKWoWClient handleBackgroundEventsWithCompletion:completionHandler];
+    else completionHandler();
 }
 @end
 

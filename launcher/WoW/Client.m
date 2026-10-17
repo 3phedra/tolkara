@@ -1,62 +1,151 @@
 #import "Client.h"
 #import "CASC.h"
 
-// A client reuses one connection pool, with serial transfers and bounded buffers. No cookies,
-// credentials, redirects, HTTP fallback, or application-installation writes.
-@interface TKWoWTransfer : NSObject <NSURLSessionDataDelegate>
-@property(nonatomic) NSMutableData *data;
-@property(nonatomic) NSError *error;
-@property(nonatomic) NSUInteger limit;
+// Downloads run in one background URLSession for the whole app, so the system
+// keeps them alive while the app is suspended or the screen is locked. Each
+// request is a file download with an optional Range header; the waiting updater
+// thread reads the finished file when the system reports completion.
+NSString *const TKWoWBackgroundSessionIdentifier=@"org.tolkara.wow-updates";
+@interface TKWoWTransferRecord : NSObject
+@property(nonatomic) NSInteger identifier;
 @property(nonatomic) NSString *range;
+@property(nonatomic) NSUInteger limit;
+@property(nonatomic) NSError *error;
+@property(nonatomic) NSURL *file;
+@property(nonatomic) NSURLSessionTask *task;
 @property(nonatomic) dispatch_semaphore_t done;
 @end
-@implementation TKWoWTransfer
-- (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)task
-    didReceiveResponse:(NSURLResponse *)response completionHandler:(void (^)(NSURLSessionResponseDisposition))completion {
-    (void)session; (void)task;
-    NSInteger status=[(NSHTTPURLResponse *)response statusCode];
-    BOOL rangeOK=!self.range || (status==206 && [[(NSHTTPURLResponse *)response valueForHTTPHeaderField:@"Content-Range"] hasPrefix:[self.range stringByAppendingString:@"/"]]);
-    if (status!=(self.range?206:200) || !rangeOK || response.expectedContentLength>(int64_t)self.limit) {
-        self.error=TKWoWError(status!=200 ? [NSString stringWithFormat:@"Download failed (HTTP %ld).",(long)status] : @"Download exceeds its size limit.");
-        completion(NSURLSessionResponseCancel);
-    } else completion(NSURLSessionResponseAllow);
+@implementation TKWoWTransferRecord
+@end
+
+@interface TKWoWDownloads : NSObject <NSURLSessionDelegate, NSURLSessionTaskDelegate, NSURLSessionDownloadDelegate>
+@property(nonatomic) NSURLSession *session;
+@property(nonatomic) NSMutableDictionary<NSNumber *, TKWoWTransferRecord *> *records;
+@property(nonatomic) NSInteger nextIdentifier;
+@property(nonatomic, copy) void (^eventsCompletion)(void);
+@end
+@implementation TKWoWDownloads
++ (instancetype)shared {
+    static TKWoWDownloads *shared;
+    static dispatch_once_t once;
+    dispatch_once(&once,^{ shared=[TKWoWDownloads new]; });
+    return shared;
 }
-- (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)task didReceiveData:(NSData *)data {
+- (instancetype)init {
+    if((self=[super init])) { _records=[NSMutableDictionary new]; _nextIdentifier=1; }
+    return self;
+}
+- (NSURLSession *)session {
+    @synchronized(self) {
+        if(!_session) {
+            NSURLSessionConfiguration *config=[NSURLSessionConfiguration backgroundSessionConfigurationWithIdentifier:TKWoWBackgroundSessionIdentifier];
+            config.HTTPCookieStorage=nil;config.URLCredentialStorage=nil;config.URLCache=nil;
+            config.requestCachePolicy=NSURLRequestReloadIgnoringLocalCacheData;
+            config.timeoutIntervalForRequest=60;config.timeoutIntervalForResource=6*60*60;
+            config.HTTPMaximumConnectionsPerHost=1;
+            config.HTTPAdditionalHeaders=@{@"Accept-Encoding":@"identity"};
+            config.discretionary=NO;config.sessionSendsLaunchEvents=YES;
+            NSOperationQueue *queue=[NSOperationQueue new];queue.maxConcurrentOperationCount=1;
+            _session=[NSURLSession sessionWithConfiguration:config delegate:self delegateQueue:queue];
+        }
+        return _session;
+    }
+}
+- (TKWoWTransferRecord *)requestURL:(NSURL *)url range:(NSString *)range limit:(NSUInteger)limit error:(NSError **)error {
+    NSMutableURLRequest *request=[NSMutableURLRequest requestWithURL:url];
+    if(range) [request setValue:[@"bytes=" stringByAppendingString:range] forHTTPHeaderField:@"Range"];
+    TKWoWTransferRecord *record=[TKWoWTransferRecord new];
+    record.range=range; record.limit=limit; record.done=dispatch_semaphore_create(0);
+    NSURLSessionDownloadTask *task=[self.session downloadTaskWithRequest:request];
+    @synchronized(self) {
+        record.identifier=_nextIdentifier++;
+        task.taskDescription=[NSString stringWithFormat:@"%ld",(long)record.identifier];
+        record.task=task;
+        _records[@(record.identifier)]=record;
+        [task resume];
+    }
+    return record;
+}
+- (TKWoWTransferRecord *)recordForTask:(NSURLSessionTask *)task {
+    NSInteger identifier=task.taskDescription.integerValue;
+    @synchronized(self) { return _records[@(identifier)]; }
+}
+- (void)cancelRecord:(TKWoWTransferRecord *)record {
+    if(record) [record.task cancel];
+}
+- (void)setEventsCompletion:(void (^)(void))completion {
+    @synchronized(self) { _eventsCompletion=[completion copy]; }
+}
+- (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didReceiveResponse:(NSURLResponse *)response completionHandler:(void (^)(NSURLSessionResponseDisposition))completionHandler {
     (void)session;
-    if (data.length>self.limit-self.data.length) {
-        self.error=TKWoWError(@"Download exceeds its size limit."); [task cancel];
-    } else [self.data appendData:data];
+    TKWoWTransferRecord *record=[self recordForTask:task];
+    if(!record) { completionHandler(NSURLSessionResponseCancel); return; }
+    NSInteger status=[(NSHTTPURLResponse *)response statusCode];
+    BOOL rangeOK=!record.range || (status==206 && [[(NSHTTPURLResponse *)response valueForHTTPHeaderField:@"Content-Range"] hasPrefix:[record.range stringByAppendingString:@"/"]]);
+    if (status!=(record.range?206:200) || !rangeOK || response.expectedContentLength>(int64_t)record.limit) {
+        record.error=TKWoWError(status!=200 ? [NSString stringWithFormat:@"Download failed (HTTP %ld).",(long)status] : @"Download exceeds its size limit.");
+        completionHandler(NSURLSessionResponseCancel);
+    } else completionHandler(NSURLSessionResponseAllow);
 }
 - (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task
     willPerformHTTPRedirection:(NSHTTPURLResponse *)response newRequest:(NSURLRequest *)request
-    completionHandler:(void (^)(NSURLRequest * _Nullable))completion {
-    (void)session; (void)task; (void)response; (void)request;
-    self.error=TKWoWError(@"Unexpected download redirect."); completion(nil);
+    completionHandler:(void (^)(NSURLRequest * _Nullable))completionHandler {
+    (void)session; (void)response; (void)request;
+    TKWoWTransferRecord *record=[self recordForTask:task];
+    if(record) record.error=TKWoWError(@"Unexpected download redirect.");
+    completionHandler(nil);
+}
+- (void)URLSession:(NSURLSession *)session downloadTask:(NSURLSessionDownloadTask *)downloadTask didFinishDownloadingToURL:(NSURL *)location {
+    (void)session;
+    TKWoWTransferRecord *record=[self recordForTask:downloadTask];
+    if(!record) return;
+    // The system deletes its temporary file when this returns: take a copy.
+    NSString *path=[NSTemporaryDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"wowdl-%ld.bin",(long)downloadTask.taskIdentifier]];
+    NSFileManager *fm=NSFileManager.defaultManager;
+    [fm removeItemAtPath:path error:NULL];
+    if([fm moveItemAtURL:location toURL:[NSURL fileURLWithPath:path] error:NULL]) record.file=[NSURL fileURLWithPath:path];
 }
 - (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didCompleteWithError:(NSError *)error {
-    (void)session; (void)task;
-    if (!self.error) self.error=error;
-    dispatch_semaphore_signal(self.done);
+    (void)session;
+    TKWoWTransferRecord *record=[self recordForTask:task];
+    if(!record) return;
+    @synchronized(self) { [_records removeObjectForKey:@(record.identifier)]; }
+    if(!record.error) record.error=error;
+    dispatch_semaphore_signal(record.done);
+}
+- (void)URLSessionDidFinishEventsForBackgroundURLSession:(NSURLSession *)session {
+    (void)session;
+    void (^completion)(void)=nil;
+    @synchronized(self) { completion=_eventsCompletion; _eventsCompletion=nil; }
+    if(completion) dispatch_async(dispatch_get_main_queue(),completion);
 }
 @end
 
 @implementation TKWoWClient {
     NSLock *_lock;
     BOOL _cancelled;
-    NSURLSession *_session;
-    TKWoWTransfer *_transfer;
+    NSMutableSet<TKWoWTransferRecord *> *_records;
     NSData *_archiveTable;
     NSArray<NSString *> *_archives;
     NSString *_archiveConfig;
 
 }
 - (instancetype)init {
-    if ((self=[super init])) _lock=[NSLock new];
+    if ((self=[super init])) { _lock=[NSLock new]; _records=[NSMutableSet new]; }
     return self;
 }
-- (void)dealloc { [_session invalidateAndCancel]; }
+- (void)dealloc {
+    [_lock lock]; NSArray *records=_records.allObjects; _records=nil; [_lock unlock];
+    for(TKWoWTransferRecord *record in records) [[TKWoWDownloads shared] cancelRecord:record];
+}
 - (void)cancel {
-    [_lock lock]; _cancelled=YES; [_session invalidateAndCancel]; [_lock unlock];
+    [_lock lock]; _cancelled=YES; NSArray *records=_records.allObjects; [_lock unlock];
+    for(TKWoWTransferRecord *record in records) [[TKWoWDownloads shared] cancelRecord:record];
+}
++ (void)handleBackgroundEventsWithCompletion:(void (^)(void))completion {
+    TKWoWDownloads *downloads=[TKWoWDownloads shared];
+    [downloads session];
+    if(completion) [downloads setEventsCompletion:completion];
 }
 - (BOOL)cancelled { [_lock lock]; BOOL value=_cancelled; [_lock unlock]; return value; }
 - (NSData *)fetch:(NSURL *)url limit:(NSUInteger)limit error:(NSError **)error {
@@ -71,40 +160,28 @@
         return nil;
     }
     [_lock lock];
-    if(_cancelled) {
-        [_lock unlock];if(error)*error=TKWoWError(@"Download cancelled.");return nil;
-    }
-    if(!_session) {
-        _transfer=[TKWoWTransfer new];
-        NSURLSessionConfiguration *config=NSURLSessionConfiguration.ephemeralSessionConfiguration;
-        config.HTTPCookieStorage=nil;config.URLCredentialStorage=nil;config.URLCache=nil;
-        config.requestCachePolicy=NSURLRequestReloadIgnoringLocalCacheData;
-        config.timeoutIntervalForRequest=30;config.timeoutIntervalForResource=300;
-        config.HTTPMaximumConnectionsPerHost=1;
-        config.HTTPAdditionalHeaders=@{@"Accept-Encoding":@"identity"};
-        NSOperationQueue *queue=[NSOperationQueue new];queue.maxConcurrentOperationCount=1;
-        _session=[NSURLSession sessionWithConfiguration:config delegate:_transfer delegateQueue:queue];
-    }
-    TKWoWTransfer *transfer=_transfer;
-    transfer.data=[NSMutableData new];transfer.error=nil;transfer.range=nil;
-    transfer.limit=limit;transfer.done=dispatch_semaphore_create(0);
-    NSMutableURLRequest *request=[NSMutableURLRequest requestWithURL:url];
-    if(size) {
-        NSString *bounds=[NSString stringWithFormat:@"%llu-%llu",offset,offset+size-1];
-        [request setValue:[@"bytes=" stringByAppendingString:bounds] forHTTPHeaderField:@"Range"];
-        transfer.range=[@"bytes " stringByAppendingString:bounds];
-    }
-    [[_session dataTaskWithRequest:request] resume];
+    BOOL cancelled=_cancelled;
     [_lock unlock];
-    // Delegate completion is guaranteed by the resource timeout/cancellation.
-    dispatch_semaphore_wait(transfer.done,DISPATCH_TIME_FOREVER);
-    [_lock lock]; BOOL cancelled=_cancelled; [_lock unlock];
-    if (transfer.error || cancelled) {
-        if (error) *error=transfer.error?:TKWoWError(@"Download cancelled.");
+    if(cancelled) { if(error)*error=TKWoWError(@"Download cancelled."); return nil; }
+    NSString *range=size?[NSString stringWithFormat:@"%llu-%llu",offset,offset+size-1]:nil;
+    NSError *failure=nil;
+    TKWoWTransferRecord *record=[[TKWoWDownloads shared] requestURL:url range:range limit:limit error:&failure];
+    if(!record) { if(error)*error=failure?:TKWoWError(@"Could not start the download."); return nil; }
+    [_lock lock];
+    if(_cancelled) { [_lock unlock]; [[TKWoWDownloads shared] cancelRecord:record]; if(error)*error=TKWoWError(@"Download cancelled."); return nil; }
+    [_records addObject:record];
+    [_lock unlock];
+    // The system downloads in the background; this wait survives suspension.
+    dispatch_semaphore_wait(record.done,DISPATCH_TIME_FOREVER);
+    [_lock lock]; [_records removeObject:record]; cancelled=_cancelled; [_lock unlock];
+    NSData *data=record.file?[NSData dataWithContentsOfURL:record.file options:0 error:NULL]:nil;
+    if(record.file) [[NSFileManager defaultManager] removeItemAtURL:record.file error:NULL];
+    if(record.error || cancelled || !data) {
+        if (error) *error=record.error?:TKWoWError(cancelled?@"Download cancelled.":@"Download failed.");
         return nil;
     }
-    if(size && transfer.data.length!=size) { if(error)*error=TKWoWError(@"Incomplete range download.");return nil; }
-    return transfer.data;
+    if(size && data.length!=size) { if(error)*error=TKWoWError(@"Incomplete range download.");return nil; }
+    return data;
 }
 - (NSDictionary *)rowAt:(NSURL *)url field:(NSString *)field value:(NSString *)value error:(NSError **)error {
     NSData *data=[self fetch:url limit:2*1024*1024 error:error];
