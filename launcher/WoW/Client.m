@@ -1,4 +1,5 @@
 #import "Client.h"
+#import <UIKit/UIKit.h>
 #import "CASC.h"
 
 // Downloads run in one background URLSession for the whole app, so the system
@@ -14,12 +15,14 @@ NSString *const TKWoWBackgroundSessionIdentifier=@"org.tolkara.wow-updates";
 @property(nonatomic) NSURL *file;
 @property(nonatomic) NSURLSessionTask *task;
 @property(nonatomic) dispatch_semaphore_t done;
+@property(nonatomic) BOOL background;
 @end
 @implementation TKWoWTransferRecord
 @end
 
 @interface TKWoWBackgroundDownloads : NSObject <NSURLSessionDelegate, NSURLSessionTaskDelegate, NSURLSessionDownloadDelegate>
 @property(nonatomic) NSURLSession *session;
+@property(nonatomic) NSURLSession *foreground;
 @property(nonatomic) NSMutableDictionary<NSNumber *, TKWoWTransferRecord *> *records;
 @property(nonatomic) NSInteger nextIdentifier;
 @property(nonatomic, copy) void (^eventsCompletion)(void);
@@ -35,28 +38,39 @@ NSString *const TKWoWBackgroundSessionIdentifier=@"org.tolkara.wow-updates";
     if((self=[super init])) { _records=[NSMutableDictionary new]; _nextIdentifier=1; }
     return self;
 }
-- (NSURLSession *)session {
+// Foreground transfers use an in-memory session at full speed; background
+// transfers use the system-managed session, which iOS deliberately throttles
+// but keeps running while the app is suspended.
+- (NSURLSession *)sessionForBackground:(BOOL)background {
     @synchronized(self) {
-        if(!_session) {
-            NSURLSessionConfiguration *config=[NSURLSessionConfiguration backgroundSessionConfigurationWithIdentifier:TKWoWBackgroundSessionIdentifier];
+        NSURLSession **slot=background?&_session:&_foreground;
+        if(!*slot) {
+            NSURLSessionConfiguration *config=background?
+                [NSURLSessionConfiguration backgroundSessionConfigurationWithIdentifier:TKWoWBackgroundSessionIdentifier]:
+                [NSURLSessionConfiguration ephemeralSessionConfiguration];
             config.HTTPCookieStorage=nil;config.URLCredentialStorage=nil;config.URLCache=nil;
             config.requestCachePolicy=NSURLRequestReloadIgnoringLocalCacheData;
-            config.timeoutIntervalForRequest=60;config.timeoutIntervalForResource=6*60*60;
             config.HTTPMaximumConnectionsPerHost=1;
             config.HTTPAdditionalHeaders=@{@"Accept-Encoding":@"identity"};
-            config.discretionary=NO;config.sessionSendsLaunchEvents=YES;
+            if(background) {
+                config.timeoutIntervalForRequest=60;config.timeoutIntervalForResource=6*60*60;
+                config.discretionary=NO;config.sessionSendsLaunchEvents=YES;
+            } else {
+                config.timeoutIntervalForRequest=30;config.timeoutIntervalForResource=300;
+            }
             NSOperationQueue *queue=[NSOperationQueue new];queue.maxConcurrentOperationCount=1;
-            _session=[NSURLSession sessionWithConfiguration:config delegate:self delegateQueue:queue];
+            *slot=[NSURLSession sessionWithConfiguration:config delegate:self delegateQueue:queue];
         }
-        return _session;
+        return *slot;
     }
 }
-- (TKWoWTransferRecord *)requestURL:(NSURL *)url range:(NSString *)range limit:(NSUInteger)limit error:(NSError **)error {
+- (void)prepareBackgroundSession { (void)[self sessionForBackground:YES]; }
+- (TKWoWTransferRecord *)requestURL:(NSURL *)url range:(NSString *)range limit:(NSUInteger)limit background:(BOOL)background error:(NSError **)error {
     NSMutableURLRequest *request=[NSMutableURLRequest requestWithURL:url];
     if(range) [request setValue:[@"bytes=" stringByAppendingString:range] forHTTPHeaderField:@"Range"];
     TKWoWTransferRecord *record=[TKWoWTransferRecord new];
-    record.range=range; record.limit=limit; record.done=dispatch_semaphore_create(0);
-    NSURLSessionDownloadTask *task=[self.session downloadTaskWithRequest:request];
+    record.range=range; record.limit=limit; record.background=background; record.done=dispatch_semaphore_create(0);
+    NSURLSessionDownloadTask *task=[[self sessionForBackground:background] downloadTaskWithRequest:request];
     @synchronized(self) {
         record.identifier=_nextIdentifier++;
         task.taskDescription=[NSString stringWithFormat:@"%ld",(long)record.identifier];
@@ -125,6 +139,7 @@ NSString *const TKWoWBackgroundSessionIdentifier=@"org.tolkara.wow-updates";
     NSLock *_lock;
     BOOL _cancelled;
     NSMutableSet<TKWoWTransferRecord *> *_records;
+    BOOL _preferBackground;
     NSData *_archiveTable;
     NSArray<NSString *> *_archives;
     NSString *_archiveConfig;
@@ -144,8 +159,25 @@ NSString *const TKWoWBackgroundSessionIdentifier=@"org.tolkara.wow-updates";
 }
 + (void)handleBackgroundEventsWithCompletion:(void (^)(void))completion {
     TKWoWBackgroundDownloads *downloads=[TKWoWBackgroundDownloads shared];
-    [downloads session];
+    [downloads prepareBackgroundSession];
     if(completion) [downloads setEventsCompletion:completion];
+}
+- (void)backgrounded {
+    [_lock lock]; _preferBackground=YES;
+    NSMutableArray *foreground=[NSMutableArray new];
+    for(TKWoWTransferRecord *record in _records) if(!record.background) [foreground addObject:record];
+    [_lock unlock];
+    // Reissue these on the background session so an update keeps running.
+    for(TKWoWTransferRecord *record in foreground) [[TKWoWBackgroundDownloads shared] cancelRecord:record];
+}
+- (void)foregrounded { [_lock lock]; _preferBackground=NO; [_lock unlock]; }
+- (BOOL)wantsBackground {
+    [_lock lock]; BOOL preferred=_preferBackground; [_lock unlock];
+    if(preferred) return YES;
+    __block BOOL active=NO;
+    if(NSThread.isMainThread) active=UIApplication.sharedApplication.applicationState==UIApplicationStateActive;
+    else dispatch_sync(dispatch_get_main_queue(),^{ active=UIApplication.sharedApplication.applicationState==UIApplicationStateActive; });
+    return !active;
 }
 - (BOOL)cancelled { [_lock lock]; BOOL value=_cancelled; [_lock unlock]; return value; }
 - (NSData *)fetch:(NSURL *)url limit:(NSUInteger)limit error:(NSError **)error {
@@ -165,23 +197,31 @@ NSString *const TKWoWBackgroundSessionIdentifier=@"org.tolkara.wow-updates";
     if(cancelled) { if(error)*error=TKWoWError(@"Download cancelled."); return nil; }
     NSString *range=size?[NSString stringWithFormat:@"%llu-%llu",offset,offset+size-1]:nil;
     NSError *failure=nil;
-    TKWoWTransferRecord *record=[[TKWoWBackgroundDownloads shared] requestURL:url range:range limit:limit error:&failure];
-    if(!record) { if(error)*error=failure?:TKWoWError(@"Could not start the download."); return nil; }
-    [_lock lock];
-    if(_cancelled) { [_lock unlock]; [[TKWoWBackgroundDownloads shared] cancelRecord:record]; if(error)*error=TKWoWError(@"Download cancelled."); return nil; }
-    [_records addObject:record];
-    [_lock unlock];
-    // The system downloads in the background; this wait survives suspension.
-    dispatch_semaphore_wait(record.done,DISPATCH_TIME_FOREVER);
-    [_lock lock]; [_records removeObject:record]; cancelled=_cancelled; [_lock unlock];
-    NSData *data=record.file?[NSData dataWithContentsOfURL:record.file options:0 error:NULL]:nil;
-    if(record.file) [[NSFileManager defaultManager] removeItemAtURL:record.file error:NULL];
-    if(record.error || cancelled || !data) {
-        if (error) *error=record.error?:TKWoWError(cancelled?@"Download cancelled.":@"Download failed.");
-        return nil;
+    for(int attempt=0;attempt<4;attempt++) {
+        BOOL background=[self wantsBackground];
+        TKWoWTransferRecord *record=[[TKWoWBackgroundDownloads shared] requestURL:url range:range limit:limit background:background error:&failure];
+        if(!record) { if(error)*error=failure?:TKWoWError(@"Could not start the download."); return nil; }
+        [_lock lock];
+        if(_cancelled) { [_lock unlock]; [[TKWoWBackgroundDownloads shared] cancelRecord:record]; if(error)*error=TKWoWError(@"Download cancelled."); return nil; }
+        [_records addObject:record];
+        [_lock unlock];
+        // The system may keep this download running while the app is suspended.
+        dispatch_semaphore_wait(record.done,DISPATCH_TIME_FOREVER);
+        [_lock lock]; [_records removeObject:record]; cancelled=_cancelled; [_lock unlock];
+        // The app moved to the background mid-request: reissue it on the
+        // background session instead of stalling until the app returns.
+        if(record.error && !cancelled && !background && [self wantsBackground]) continue;
+        NSData *data=record.file?[NSData dataWithContentsOfURL:record.file options:0 error:NULL]:nil;
+        if(record.file) [[NSFileManager defaultManager] removeItemAtURL:record.file error:NULL];
+        if(record.error || cancelled || !data) {
+            if (error) *error=record.error?:TKWoWError(cancelled?@"Download cancelled.":@"Download failed.");
+            return nil;
+        }
+        if(size && data.length!=size) { if(error)*error=TKWoWError(@"Incomplete range download.");return nil; }
+        return data;
     }
-    if(size && data.length!=size) { if(error)*error=TKWoWError(@"Incomplete range download.");return nil; }
-    return data;
+    if(error) *error=TKWoWError(@"Download did not start.");
+    return nil;
 }
 - (NSDictionary *)rowAt:(NSURL *)url field:(NSString *)field value:(NSString *)value error:(NSError **)error {
     NSData *data=[self fetch:url limit:2*1024*1024 error:error];

@@ -11,6 +11,10 @@ extern NSString *const TKWoWBackgroundSessionIdentifier;
 @interface TKWoWClient : NSObject
 + (void)handleBackgroundEventsWithCompletion:(void (^)(void))completion;
 - (void)cancel;
+// Session hand-off: foreground transfers run at full speed, background ones
+// keep running while the app is suspended. No-op while a client is idle.
+- (void)backgrounded;
+- (void)foregrounded;
 @property(nonatomic, readonly) BOOL cancelled;
 @property(nonatomic, copy, nullable) void (^progress)(NSString *phase, uint64_t done, uint64_t total);
 - (nullable NSData *)configuration:(NSString *)key cdn:(NSString *)cdn error:(NSError **)error;

@@ -167,9 +167,10 @@ static UIStackView *Stack(NSArray<UIView *> *views, CGFloat spacing) {
 - (void)viewDidDisappear:(BOOL)animated { [super viewDidDisappear:animated]; if(!_updating)[self cancel]; }
 - (void)foreground:(NSNotification *)note {
     (void)note;
+    [_client foregrounded];
     if (self.isViewLoaded && self.view.window && self.navigationController.topViewController==self && !_busy && !_sessionUsed && !_starting) [self inspectLocal];
 }
-- (void)background:(NSNotification *)note { (void)note; if(!_updating)[self cancel]; }
+- (void)background:(NSNotification *)note { (void)note; [_client backgrounded]; if(!_updating)[self cancel]; }
 - (void)cancel { [_client cancel]; _client=nil; _generation++; _busy=NO; }
 - (void)setExecutionMode:(TKExecutionMode)mode { _executionMode=mode; if (self.isViewLoaded) [self render]; }
 - (void)setSessionUsed:(BOOL)used { _sessionUsed=used; if (used) [self cancel]; if (self.isViewLoaded) [self render]; }
