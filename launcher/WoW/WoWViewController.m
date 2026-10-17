@@ -163,11 +163,11 @@ static UIStackView *Stack(NSArray<UIView *> *views, CGFloat spacing) {
     _columns.axis=horizontal?UILayoutConstraintAxisHorizontal:UILayoutConstraintAxisVertical;
     _columns.alignment=horizontal?UIStackViewAlignmentTop:UIStackViewAlignmentFill;
 }
-- (void)viewDidAppear:(BOOL)animated { [super viewDidAppear:animated]; if (!_busy && !_sessionUsed && !_starting) [self refresh]; }
+- (void)viewDidAppear:(BOOL)animated { [super viewDidAppear:animated]; if (!_busy && !_sessionUsed && !_starting) [self inspectLocal]; }
 - (void)viewDidDisappear:(BOOL)animated { [super viewDidDisappear:animated]; [self cancel]; }
 - (void)foreground:(NSNotification *)note {
     (void)note;
-    if (self.isViewLoaded && self.view.window && self.navigationController.topViewController==self && !_busy && !_sessionUsed && !_starting) [self refresh];
+    if (self.isViewLoaded && self.view.window && self.navigationController.topViewController==self && !_busy && !_sessionUsed && !_starting) [self inspectLocal];
 }
 - (void)background:(NSNotification *)note { (void)note; [self cancel]; }
 - (void)cancel { [_client cancel]; _client=nil; _generation++; _busy=NO; }
@@ -181,6 +181,10 @@ static UIStackView *Stack(NSArray<UIView *> *views, CGFloat spacing) {
     [self refresh];
 }
 - (void)refresh { [self checkForUpdatesAndLaunch:NO]; }
+- (void)inspectLocal {
+    _plan=nil; _error=nil; _updateError=NO; _installation=TKWoWLocalInspection(_library,_product);
+    [self render];
+}
 - (void)checkForUpdatesAndLaunch:(BOOL)launch { [self checkForUpdatesAndLaunch:launch install:NO]; }
 - (void)checkForUpdatesAndLaunch:(BOOL)launch install:(BOOL)install {
     if (_starting || _sessionUsed) return;
@@ -196,9 +200,7 @@ static UIStackView *Stack(NSArray<UIView *> *views, CGFloat spacing) {
     _client=[TKWoWClient new]; _busy=YES; [self render];
     TKWoWClient *client=_client; NSUInteger generation=_generation;
     NSDictionary *product=_product; NSString *region=_region, *locale=_locale;
-    static dispatch_queue_t queue; static dispatch_once_t once;
-    dispatch_once(&once,^{ queue=dispatch_queue_create("org.tolkara.wow-updates",DISPATCH_QUEUE_SERIAL); });
-    dispatch_async(queue,^{
+    dispatch_async(TKWoWUpdateQueue(),^{
         [self->_library discover];
         NSError *error=nil;
         NSDictionary *plan=[client planForProduct:product[@"id"] region:region locale:locale error:&error];
@@ -258,13 +260,18 @@ static UIStackView *Stack(NSArray<UIView *> *views, CGFloat spacing) {
 - (void)primaryAction {
     if (_busy || _sessionUsed || _starting) return;
     if (_startupFailure) { _startupFailure=nil; [self render]; }
-    if (_error || !_plan) { [self refresh]; return; }
-    if (_installation.state==TKWoWInstallationMissing || _installation.state==TKWoWInstallationNeedsRepair) {
-        [self checkForUpdatesAndLaunch:NO install:YES];return;
+    // A present installation starts immediately. Checking for updates and
+    // downloading them are explicit actions (Settings, Install, Update).
+    if (_installation.state==TKWoWInstallationReady && _installation.app) {
+        if (_executionMode==TKExecutionModeNone) return;
+        if (self.startApp) self.startApp(_installation.app);
+        return;
     }
-    if (_installation.state!=TKWoWInstallationReady) return;
-    if (_executionMode==TKExecutionModeNone) return;
-    [self checkForUpdatesAndLaunch:YES];
+    if (_installation.state==TKWoWInstallationMissing || _installation.state==TKWoWInstallationNeedsRepair ||
+        _installation.state==TKWoWInstallationOutdated) {
+        [self checkForUpdatesAndLaunch:NO install:YES]; return;
+    }
+    [self checkForUpdatesAndLaunch:NO];
 }
 - (void)repairInstallation {
     if(_busy || _starting || _sessionUsed || !_installation.app)return;
@@ -334,7 +341,7 @@ static UIStackView *Stack(NSArray<UIView *> *views, CGFloat spacing) {
         title=@"Checking for updates…";
         detail=@"Checking the latest version and your installed copy.";
         action=@"Checking…";
-    } else if (_error || !_plan) {
+    } else if (_error) {
         title=_updateError?@"Update interrupted":@"Could not check this edition";
         detail=_updateError?@"Your installed copy is preserved. Try again to resume the update; see Settings for details.":@"We cannot confirm that your game is up to date. Check your connection and try again.";
         action=@"Try again"; enabled=YES;
@@ -347,14 +354,14 @@ static UIStackView *Stack(NSArray<UIView *> *views, CGFloat spacing) {
         case TKWoWInstallationOutdated:
             title=@"Update required";
             detail=@"A newer build is available. The update starts automatically.";
-            action=@"Update needed to play"; break;
+            action=@"Update"; enabled=YES; break;
         case TKWoWInstallationNeedsRepair:
             title=@"Your copy needs attention";
             detail=@"We could not verify all game files. Repair downloads the original files and keeps your settings and addons.";
             action=@"Repair installation"; enabled=YES; break;
         case TKWoWInstallationReady:
             title=@"Ready to play";
-            detail=@"Your game is up to date.";
+            detail=@"Your installed copy is ready. Use Settings to check for updates.";
             action=_executionMode==TKExecutionModeNone?@"Startup unavailable":@"Play"; enabled=_executionMode!=TKExecutionModeNone; break;
         }
     }
@@ -414,6 +421,11 @@ static UIStackView *Stack(NSArray<UIView *> *views, CGFloat spacing) {
 - (void)settings {
     UIAlertController *sheet=[UIAlertController alertControllerWithTitle:@"Settings"
         message:@"Updates install automatically while this app is open. Settings and addons are preserved. Startup preparation is separate from downloading updates." preferredStyle:UIAlertControllerStyleActionSheet];
+    if(!_busy && !_starting && !_sessionUsed) {
+        [sheet addAction:[UIAlertAction actionWithTitle:@"Check for updates now" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+            (void)a; [self checkForUpdatesAndLaunch:NO];
+        }]];
+    }
     if(!_busy && !_starting && !_sessionUsed && _installation.app) {
         [sheet addAction:[UIAlertAction actionWithTitle:@"Verify and repair game files" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
             (void)a; [self repairInstallation];
@@ -463,27 +475,40 @@ static UIStackView *Stack(NSArray<UIView *> *views, CGFloat spacing) {
 }
 - (void)performRemovalOfProduct:(NSDictionary *)product {
     [self cancel]; _busy=YES; [self render];
+    TKAppLibrary *library=_library;
     NSString *root=[self installationRoot];
     NSString *work=[root.stringByDeletingLastPathComponent stringByAppendingPathComponent:@".tolkara-updates"];
-    NSString *folderPath=[root stringByAppendingPathComponent:product[@"folder"]];
+    NSString *folder=product[@"folder"];
+    NSString *relative=[@"World of Warcraft" stringByAppendingPathComponent:folder];
+    NSString *folderPath=[root stringByAppendingPathComponent:folder];
     NSString *prefix=[product[@"id"] stringByAppendingString:@"-"];
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{
-        NSFileManager *fm=NSFileManager.defaultManager; NSError *failure=nil;
-        // Only this edition's folder and this edition's staged downloads are
+    NSFileManager *fm=NSFileManager.defaultManager;
+    // Runs on the update queue so it can never overlap an in-flight update.
+    dispatch_async(TKWoWUpdateQueue(),^{
+        NSError *failure=nil;
+        // Only this edition's folder, entries and staged downloads are
         // removed. The shared Data pool and every other edition stay in place.
-        if([fm fileExistsAtPath:folderPath]) [fm removeItemAtPath:folderPath error:&failure];
+        if([fm fileExistsAtPath:folderPath]) {
+            if(![library removeApplicationFolder:relative error:&failure])
+                [fm removeItemAtPath:folderPath error:&failure];
+        }
+        // Entries left behind by a manual deletion point at nothing: drop them
+        // so the edition shows as not installed instead of needing repair.
+        for(TKApp *app in library.apps.copy)
+            if(app.source==TKAppSourceDocuments && [app.workingDirectory.lastPathComponent isEqual:folder])
+                [library removeApp:app error:NULL];
         for(NSString *entry in [fm contentsOfDirectoryAtPath:work error:NULL])
             if([entry hasPrefix:prefix])[fm removeItemAtPath:[work stringByAppendingPathComponent:entry] error:NULL];
         dispatch_async(dispatch_get_main_queue(),^{
-            [[NSUserDefaults standardUserDefaults] removeObjectForKey:[@"WoWInstallRequested." stringByAppendingString:product[@"id"]]];
-            [[NSUserDefaults standardUserDefaults] removeObjectForKey:[@"WoWRepairRequested." stringByAppendingString:product[@"id"]]];
+            [NSUserDefaults.standardUserDefaults removeObjectForKey:[@"WoWInstallRequested." stringByAppendingString:product[@"id"]]];
+            [NSUserDefaults.standardUserDefaults removeObjectForKey:[@"WoWRepairRequested." stringByAppendingString:product[@"id"]]];
             self->_busy=NO;
             if(failure) {
                 UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"Could not remove all files" message:failure.localizedDescription preferredStyle:UIAlertControllerStyleAlert];
                 [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
                 [self presentViewController:alert animated:YES completion:nil];
             }
-            [self refresh];
+            [self inspectLocal];
         });
     });
 }

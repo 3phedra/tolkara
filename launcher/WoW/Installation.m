@@ -52,3 +52,18 @@ TKWoWInstallation *TKWoWInspectInstallation(TKAppLibrary *library, NSDictionary 
     }
     return result;
 }
+
+TKWoWInstallation *TKWoWLocalInspection(TKAppLibrary *library, NSDictionary *product) {
+    TKWoWInstallation *result=[TKWoWInstallation new];
+    result.state=TKWoWInstallationMissing;
+    for (TKApp *app in library.apps) {
+        if (app.source!=TKAppSourceDocuments || ![app.workingDirectory.lastPathComponent isEqual:product[@"folder"]]) continue;
+        NSError *error=nil;
+        NSString *path=[library executablePathForApp:app error:&error];
+        // An entry whose files were deleted is missing, not broken: it must not
+        // trigger a repair or a download until the user asks for an install.
+        if (error || !path) continue;
+        result.state=TKWoWInstallationReady; result.app=app; return result;
+    }
+    return result;
+}

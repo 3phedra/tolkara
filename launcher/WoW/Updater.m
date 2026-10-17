@@ -1,4 +1,11 @@
 #import "Updater.h"
+
+dispatch_queue_t TKWoWUpdateQueue(void) {
+    static dispatch_queue_t queue; static dispatch_once_t once;
+    dispatch_once(&once,^{ queue=dispatch_queue_create("org.tolkara.wow-updates",DISPATCH_QUEUE_SERIAL); });
+    return queue;
+}
+
 #import "CASC.h"
 #include <sys/clonefile.h>
 #include <sys/file.h>

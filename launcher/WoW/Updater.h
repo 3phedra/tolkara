@@ -10,4 +10,6 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)updatePlan:(NSDictionary *)plan root:(NSString *)root
     progress:(void (^)(NSString *phase, uint64_t done, uint64_t total))progress error:(NSError **)error;
 @end
+// Serial queue for installation work: planning, updates, and removal.
+dispatch_queue_t TKWoWUpdateQueue(void);
 NS_ASSUME_NONNULL_END
