@@ -519,7 +519,7 @@ static int CompareRanges(const void *a,const void *b) {
     const NSUInteger window=4;
     NSMutableArray<TKWoWTransferRecord *> *inFlight=[NSMutableArray new];
     NSMutableArray<NSNumber *> *inFlightOrder=[NSMutableArray new];
-    NSUInteger next=0;
+    __block NSUInteger next=0;
     void (^startNext)(void)=^{
         while(next<items.count && inFlight.count<window) {
             NSDictionary *item=items[next];
