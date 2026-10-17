@@ -1133,3 +1133,36 @@ int NSApplicationMain(int argc, const char *argv[]) {
     [[NSApplication sharedApplication] run];
     return 0;
 }
+
+#pragma mark - NSWorkspace
+
+// The client hands the Battle.net account/web-login challenge to the system
+// browser (on macOS, NSWorkspace). On the iPad the same hand-off must open
+// Safari so the user can finish the login there.
+@implementation NSWorkspace
++ (NSWorkspace *)sharedWorkspace {
+    static NSWorkspace *shared;
+    static dispatch_once_t once;
+    dispatch_once(&once,^{ shared=[NSWorkspace new]; });
+    return shared;
+}
+- (BOOL)openURL:(NSURL *)url {
+    if(![url isKindOfClass:NSURL.class] || !url.scheme.length) return NO;
+    NSString *scheme=url.scheme.lowercaseString;
+    if(![scheme isEqualToString:@"http"] && ![scheme isEqualToString:@"https"]) {
+        AKLog(@"NSWorkspace cannot open a %@ link on the iPad",scheme); return NO;
+    }
+    dispatch_async(dispatch_get_main_queue(),^{
+        [UIApplication.sharedApplication openURL:url options:@{} completionHandler:nil];
+    });
+    AKLog(@"NSWorkspace opened a %@ page in the system browser",url.host?:scheme);
+    return YES;
+}
+- (BOOL)openURL:(NSURL *)url options:(NSUInteger)options configuration:(NSDictionary *)configuration error:(NSError **)error {
+    (void)options; (void)configuration;
+    if([self openURL:url]) return YES;
+    if(error) *error=[NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorBadURL userInfo:nil];
+    return NO;
+}
+- (BOOL)openFile:(NSString *)path { (void)path; return NO; }
+@end
