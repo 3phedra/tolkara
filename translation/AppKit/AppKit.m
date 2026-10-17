@@ -1146,6 +1146,15 @@ int NSApplicationMain(int argc, const char *argv[]) {
     dispatch_once(&once,^{ shared=[NSWorkspace new]; });
     return shared;
 }
+- (NSNotificationCenter *)notificationCenter {
+    // The game observes workspace notifications (application activation).
+    // This center is private to the app: observers register and simply never
+    // receive workspace events on the iPad.
+    static NSNotificationCenter *center;
+    static dispatch_once_t once;
+    dispatch_once(&once,^{ center=[NSNotificationCenter new]; });
+    return center;
+}
 - (BOOL)openURL:(NSURL *)url {
     if(![url isKindOfClass:NSURL.class] || !url.scheme.length) return NO;
     NSString *scheme=url.scheme.lowercaseString;
