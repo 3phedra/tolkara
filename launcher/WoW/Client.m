@@ -18,17 +18,17 @@ NSString *const TKWoWBackgroundSessionIdentifier=@"org.tolkara.wow-updates";
 @implementation TKWoWTransferRecord
 @end
 
-@interface TKWoWDownloads : NSObject <NSURLSessionDelegate, NSURLSessionTaskDelegate, NSURLSessionDownloadDelegate>
+@interface TKWoWBackgroundDownloads : NSObject <NSURLSessionDelegate, NSURLSessionTaskDelegate, NSURLSessionDownloadDelegate>
 @property(nonatomic) NSURLSession *session;
 @property(nonatomic) NSMutableDictionary<NSNumber *, TKWoWTransferRecord *> *records;
 @property(nonatomic) NSInteger nextIdentifier;
 @property(nonatomic, copy) void (^eventsCompletion)(void);
 @end
-@implementation TKWoWDownloads
+@implementation TKWoWBackgroundDownloads
 + (instancetype)shared {
-    static TKWoWDownloads *shared;
+    static TKWoWBackgroundDownloads *shared;
     static dispatch_once_t once;
-    dispatch_once(&once,^{ shared=[TKWoWDownloads new]; });
+    dispatch_once(&once,^{ shared=[TKWoWBackgroundDownloads new]; });
     return shared;
 }
 - (instancetype)init {
@@ -136,14 +136,14 @@ NSString *const TKWoWBackgroundSessionIdentifier=@"org.tolkara.wow-updates";
 }
 - (void)dealloc {
     [_lock lock]; NSArray *records=_records.allObjects; _records=nil; [_lock unlock];
-    for(TKWoWTransferRecord *record in records) [[TKWoWDownloads shared] cancelRecord:record];
+    for(TKWoWTransferRecord *record in records) [[TKWoWBackgroundDownloads shared] cancelRecord:record];
 }
 - (void)cancel {
     [_lock lock]; _cancelled=YES; NSArray *records=_records.allObjects; [_lock unlock];
-    for(TKWoWTransferRecord *record in records) [[TKWoWDownloads shared] cancelRecord:record];
+    for(TKWoWTransferRecord *record in records) [[TKWoWBackgroundDownloads shared] cancelRecord:record];
 }
 + (void)handleBackgroundEventsWithCompletion:(void (^)(void))completion {
-    TKWoWDownloads *downloads=[TKWoWDownloads shared];
+    TKWoWBackgroundDownloads *downloads=[TKWoWBackgroundDownloads shared];
     [downloads session];
     if(completion) [downloads setEventsCompletion:completion];
 }
@@ -165,10 +165,10 @@ NSString *const TKWoWBackgroundSessionIdentifier=@"org.tolkara.wow-updates";
     if(cancelled) { if(error)*error=TKWoWError(@"Download cancelled."); return nil; }
     NSString *range=size?[NSString stringWithFormat:@"%llu-%llu",offset,offset+size-1]:nil;
     NSError *failure=nil;
-    TKWoWTransferRecord *record=[[TKWoWDownloads shared] requestURL:url range:range limit:limit error:&failure];
+    TKWoWTransferRecord *record=[[TKWoWBackgroundDownloads shared] requestURL:url range:range limit:limit error:&failure];
     if(!record) { if(error)*error=failure?:TKWoWError(@"Could not start the download."); return nil; }
     [_lock lock];
-    if(_cancelled) { [_lock unlock]; [[TKWoWDownloads shared] cancelRecord:record]; if(error)*error=TKWoWError(@"Download cancelled."); return nil; }
+    if(_cancelled) { [_lock unlock]; [[TKWoWBackgroundDownloads shared] cancelRecord:record]; if(error)*error=TKWoWError(@"Download cancelled."); return nil; }
     [_records addObject:record];
     [_lock unlock];
     // The system downloads in the background; this wait survives suspension.
