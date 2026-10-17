@@ -9,6 +9,7 @@
 NSString *const TKWoWBackgroundSessionIdentifier=@"org.tolkara.wow-updates";
 @interface TKWoWTransferRecord : NSObject
 @property(nonatomic) NSInteger identifier;
+@property(nonatomic) NSURL *url;
 @property(nonatomic) NSString *range;
 @property(nonatomic) NSUInteger limit;
 @property(nonatomic) NSError *error;
@@ -50,7 +51,7 @@ NSString *const TKWoWBackgroundSessionIdentifier=@"org.tolkara.wow-updates";
                 [NSURLSessionConfiguration ephemeralSessionConfiguration];
             config.HTTPCookieStorage=nil;config.URLCredentialStorage=nil;config.URLCache=nil;
             config.requestCachePolicy=NSURLRequestReloadIgnoringLocalCacheData;
-            config.HTTPMaximumConnectionsPerHost=1;
+            config.HTTPMaximumConnectionsPerHost=4;
             config.HTTPAdditionalHeaders=@{@"Accept-Encoding":@"identity"};
             if(background) {
                 config.timeoutIntervalForRequest=60;config.timeoutIntervalForResource=6*60*60;
@@ -69,7 +70,7 @@ NSString *const TKWoWBackgroundSessionIdentifier=@"org.tolkara.wow-updates";
     NSMutableURLRequest *request=[NSMutableURLRequest requestWithURL:url];
     if(range) [request setValue:[@"bytes=" stringByAppendingString:range] forHTTPHeaderField:@"Range"];
     TKWoWTransferRecord *record=[TKWoWTransferRecord new];
-    record.range=range; record.limit=limit; record.background=background; record.done=dispatch_semaphore_create(0);
+    record.url=url; record.range=range; record.limit=limit; record.background=background; record.done=dispatch_semaphore_create(0);
     NSURLSessionDownloadTask *task=[[self sessionForBackground:background] downloadTaskWithRequest:request];
     @synchronized(self) {
         record.identifier=_nextIdentifier++;
@@ -186,42 +187,56 @@ NSString *const TKWoWBackgroundSessionIdentifier=@"org.tolkara.wow-updates";
 - (NSData *)range:(NSURL *)url offset:(uint64_t)offset size:(NSUInteger)size error:(NSError **)error {
     return [self transferURL:url offset:offset size:size limit:size error:error];
 }
-- (NSData *)transferURL:(NSURL *)url offset:(uint64_t)offset size:(NSUInteger)size limit:(NSUInteger)limit error:(NSError **)error {
-    if (![url.scheme isEqualToString:@"https"] || !url.host.length || url.user || url.password) {
-        if (error) *error=TKWoWError(@"A valid HTTPS download URL is required.");
-        return nil;
-    }
-    [_lock lock];
-    BOOL cancelled=_cancelled;
-    [_lock unlock];
-    if(cancelled) { if(error)*error=TKWoWError(@"Download cancelled."); return nil; }
+- (TKWoWTransferRecord *)beginRangeFetch:(NSURL *)url offset:(uint64_t)offset size:(NSUInteger)size error:(NSError **)error {
+    BOOL background=[self wantsBackground];
     NSString *range=size?[NSString stringWithFormat:@"%llu-%llu",offset,offset+size-1]:nil;
-    NSError *failure=nil;
+    TKWoWTransferRecord *record=[[TKWoWBackgroundDownloads shared] requestURL:url range:range limit:size?:NSIntegerMax background:background error:error];
+    if(!record) return nil;
+    [_lock lock];
+    if(_cancelled) { [_lock unlock]; [[TKWoWBackgroundDownloads shared] cancelRecord:record]; return nil; }
+    [_records addObject:record];
+    [_lock unlock];
+    return record;
+}
+- (NSData *)finishRangeFetch:(TKWoWTransferRecord *)record error:(NSError **)error {
     for(int attempt=0;attempt<4;attempt++) {
-        BOOL background=[self wantsBackground];
-        TKWoWTransferRecord *record=[[TKWoWBackgroundDownloads shared] requestURL:url range:range limit:limit background:background error:&failure];
-        if(!record) { if(error)*error=failure?:TKWoWError(@"Could not start the download."); return nil; }
-        [_lock lock];
-        if(_cancelled) { [_lock unlock]; [[TKWoWBackgroundDownloads shared] cancelRecord:record]; if(error)*error=TKWoWError(@"Download cancelled."); return nil; }
-        [_records addObject:record];
-        [_lock unlock];
-        // The system may keep this download running while the app is suspended.
         dispatch_semaphore_wait(record.done,DISPATCH_TIME_FOREVER);
-        [_lock lock]; [_records removeObject:record]; cancelled=_cancelled; [_lock unlock];
-        // The app moved to the background mid-request: reissue it on the
+        [_lock lock]; [_records removeObject:record]; BOOL cancelled=_cancelled; [_lock unlock];
+        // The app moved to the background mid-request: reissue the range on the
         // background session instead of stalling until the app returns.
-        if(record.error && !cancelled && !background && [self wantsBackground]) continue;
+        if(record.error && !cancelled && !record.background && [self wantsBackground]) {
+            NSError *reissue=nil;
+            TKWoWTransferRecord *retry=[[TKWoWBackgroundDownloads shared] requestURL:record.url range:record.range limit:record.limit background:YES error:&reissue];
+            if(retry) {
+                [_lock lock];
+                if(_cancelled) { [_lock unlock]; [[TKWoWBackgroundDownloads shared] cancelRecord:retry]; break; }
+                [_records addObject:retry];
+                [_lock unlock];
+                record=retry;
+                continue;
+            }
+        }
         NSData *data=record.file?[NSData dataWithContentsOfURL:record.file options:0 error:NULL]:nil;
         if(record.file) [[NSFileManager defaultManager] removeItemAtURL:record.file error:NULL];
         if(record.error || cancelled || !data) {
             if (error) *error=record.error?:TKWoWError(cancelled?@"Download cancelled.":@"Download failed.");
             return nil;
         }
-        if(size && data.length!=size) { if(error)*error=TKWoWError(@"Incomplete range download.");return nil; }
+        if(record.range && data.length!=(NSUInteger)record.limit) { if(error)*error=TKWoWError(@"Incomplete range download."); return nil; }
         return data;
     }
     if(error) *error=TKWoWError(@"Download did not start.");
     return nil;
+}
+- (NSData *)transferURL:(NSURL *)url offset:(uint64_t)offset size:(NSUInteger)size limit:(NSUInteger)limit error:(NSError **)error {
+    if (![url.scheme isEqualToString:@"https"] || !url.host.length || url.user || url.password) {
+        if (error) *error=TKWoWError(@"A valid HTTPS download URL is required.");
+        return nil;
+    }
+    if([self cancelled]) { if(error)*error=TKWoWError(@"Download cancelled."); return nil; }
+    TKWoWTransferRecord *record=[self beginRangeFetch:url offset:offset size:size error:error];
+    if(!record) { if(error && !*error)*error=TKWoWError(@"Could not start the download."); return nil; }
+    return [self finishRangeFetch:record error:error];
 }
 - (NSDictionary *)rowAt:(NSURL *)url field:(NSString *)field value:(NSString *)value error:(NSError **)error {
     NSData *data=[self fetch:url limit:2*1024*1024 error:error];
@@ -476,13 +491,12 @@ static int CompareRanges(const void *a,const void *b) {
     }
     qsort(entries,count,sizeof(*entries),CompareRanges);NSError *failure=nil;
     @try {
-    for(NSUInteger i=0;i<count;) { @autoreleasepool {
-        if(self.cancelled) { failure=TKWoWError(@"Download cancelled.");return NO; }
+    // Work list: grouped archive ranges (up to 16 MiB) and single objects.
+    NSMutableArray<NSDictionary *> *items=[NSMutableArray new];
+    for(NSUInteger i=0;i<count;) {
         TKWoWArchiveEntry first=entries[i];
         if(first.archive==UINT32_MAX) {
-            NSString *key=TKWoWHex(first.key,16);
-            NSData *raw=[self encodedKey:key size:first.size plan:plan indices:indices error:&failure];
-            if(!raw || !consume(raw,key,&failure))return NO;i++;continue;
+            [items addObject:@{@"key":TKWoWHex(first.key,16),@"size":@(first.size)}];i++;continue;
         }
         uint64_t end=(uint64_t)first.offset+first.size,payload=first.size;NSUInteger last=i+1;
         // Up to 16 MiB per grouped request. Small gaps are tolerated, with at
@@ -495,18 +509,53 @@ static int CompareRanges(const void *a,const void *b) {
         }
         NSString *archive=_archives[first.archive];
         NSString *url=[NSString stringWithFormat:@"%@/data/%@/%@/%@",plan[@"cdn"],[archive substringToIndex:2],[archive substringWithRange:NSMakeRange(2,2)],archive];
-        NSData *range=[self range:[NSURL URLWithString:url] offset:first.offset size:(NSUInteger)(end-first.offset) error:&failure];
+        NSMutableArray *slices=[NSMutableArray new];
+        for(NSUInteger j=i;j<last;j++) [slices addObject:@{@"key":TKWoWHex(entries[j].key,16),@"offset":@(entries[j].offset-first.offset),@"size":@(entries[j].size)}];
+        [items addObject:@{@"url":url,@"offset":@(first.offset),@"length":@(end-first.offset),@"slices":slices}];
+        i=last;
+    }
+    // Download a window of ranges while earlier ones are consumed, so several
+    // transfers run at once (each background transfer is throttled on its own).
+    const NSUInteger window=4;
+    NSMutableArray<TKWoWTransferRecord *> *inFlight=[NSMutableArray new];
+    NSMutableArray<NSNumber *> *inFlightOrder=[NSMutableArray new];
+    NSUInteger next=0;
+    void (^startNext)(void)=^{
+        while(next<items.count && inFlight.count<window) {
+            NSDictionary *item=items[next];
+            if(!item[@"url"]) { next++; continue; }
+            TKWoWTransferRecord *record=[self beginRangeFetch:[NSURL URLWithString:item[@"url"]]
+                offset:[item[@"offset"] unsignedLongLongValue] size:(NSUInteger)[item[@"length"] unsignedLongLongValue] error:&failure];
+            if(!record) return;
+            [inFlight addObject:record];[inFlightOrder addObject:@(next)];next++;
+        }
+    };
+    startNext();
+    if(!inFlight.count && next<items.count && failure) return NO;
+    for(NSUInteger index=0;index<items.count;index++) {
+        if(self.cancelled) { failure=TKWoWError(@"Download cancelled.");return NO; }
+        NSDictionary *item=items[index];
+        if(!item[@"url"]) {
+            NSData *raw=[self encodedKey:item[@"key"] size:[item[@"size"] unsignedLongLongValue] plan:plan indices:indices error:&failure];
+            if(!raw || !consume(raw,item[@"key"],&failure))return NO;
+            continue;
+        }
+        if(!inFlight.count || inFlightOrder.firstObject.unsignedIntegerValue!=index) { failure=TKWoWError(@"Download pipeline lost its place.");return NO; }
+        TKWoWTransferRecord *record=inFlight.firstObject;
+        [inFlight removeObjectAtIndex:0];[inFlightOrder removeObjectAtIndex:0];
+        NSData *range=[self finishRangeFetch:record error:&failure];
         if(!range)return NO;
-        for(NSUInteger j=i;j<last;j++) { @autoreleasepool {
+        for(NSDictionary *slice in item[@"slices"]) { @autoreleasepool {
             if(self.cancelled) { failure=TKWoWError(@"Download cancelled.");return NO; }
-            NSString *key=TKWoWHex(entries[j].key,16);
-            NSUInteger offset=entries[j].offset-first.offset;
-            if(offset>range.length || entries[j].size>range.length-offset) { failure=TKWoWError(@"Truncated archive range.");return NO; }
-            NSData *raw=[NSData dataWithBytesNoCopy:(uint8_t *)range.bytes+offset length:entries[j].size freeWhenDone:NO];
+            NSString *key=slice[@"key"];
+            NSUInteger offset=[slice[@"offset"] unsignedIntegerValue],size=[slice[@"size"] unsignedIntegerValue];
+            if(offset>range.length || size>range.length-offset) { failure=TKWoWError(@"Truncated archive range.");return NO; }
+            NSData *raw=[NSData dataWithBytesNoCopy:(uint8_t *)range.bytes+offset length:size freeWhenDone:NO];
             if(!TKWoWEncodedValid(raw,key,&failure) || !consume(raw,key,&failure))return NO;
         }}
-        i=last;
-    }}
+        startNext();
+    }
+    for(TKWoWTransferRecord *record in inFlight) [[TKWoWBackgroundDownloads shared] cancelRecord:record];
     } @finally { if(failure && error)*error=failure; }
     return YES;
 }
