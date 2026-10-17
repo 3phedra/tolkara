@@ -17,6 +17,7 @@ NSString *const TKWoWBackgroundSessionIdentifier=@"org.tolkara.wow-updates";
 @property(nonatomic) NSURLSessionTask *task;
 @property(nonatomic) dispatch_semaphore_t done;
 @property(nonatomic) BOOL background;
+@property(nonatomic) BOOL handedOff;
 @end
 @implementation TKWoWTransferRecord
 @end
@@ -165,13 +166,20 @@ NSString *const TKWoWBackgroundSessionIdentifier=@"org.tolkara.wow-updates";
 }
 - (void)backgrounded {
     [_lock lock]; _preferBackground=YES;
-    NSMutableArray *foreground=[NSMutableArray new];
-    for(TKWoWTransferRecord *record in _records) if(!record.background) [foreground addObject:record];
+    NSMutableArray *move=[NSMutableArray new];
+    for(TKWoWTransferRecord *record in _records) if(!record.background) { record.handedOff=YES; [move addObject:record]; }
     [_lock unlock];
     // Reissue these on the background session so an update keeps running.
-    for(TKWoWTransferRecord *record in foreground) [[TKWoWBackgroundDownloads shared] cancelRecord:record];
+    for(TKWoWTransferRecord *record in move) [[TKWoWBackgroundDownloads shared] cancelRecord:record];
 }
-- (void)foregrounded { [_lock lock]; _preferBackground=NO; [_lock unlock]; }
+- (void)foregrounded {
+    [_lock lock]; _preferBackground=NO;
+    NSMutableArray *move=[NSMutableArray new];
+    for(TKWoWTransferRecord *record in _records) if(record.background) { record.handedOff=YES; [move addObject:record]; }
+    [_lock unlock];
+    // Switched back to the fast session: reissue what was on the slow one.
+    for(TKWoWTransferRecord *record in move) [[TKWoWBackgroundDownloads shared] cancelRecord:record];
+}
 - (BOOL)wantsBackground {
     [_lock lock]; BOOL preferred=_preferBackground; [_lock unlock];
     if(preferred) return YES;
@@ -202,11 +210,12 @@ NSString *const TKWoWBackgroundSessionIdentifier=@"org.tolkara.wow-updates";
     for(int attempt=0;attempt<4;attempt++) {
         dispatch_semaphore_wait(record.done,DISPATCH_TIME_FOREVER);
         [_lock lock]; [_records removeObject:record]; BOOL cancelled=_cancelled; [_lock unlock];
-        // The app moved to the background mid-request: reissue the range on the
-        // background session instead of stalling until the app returns.
-        if(record.error && !cancelled && !record.background && [self wantsBackground]) {
+        // The app changed state mid-request: reissue the range on the session
+        // suited to the new state instead of stalling or staying throttled.
+        if(record.error && !cancelled && record.handedOff) {
             NSError *reissue=nil;
-            TKWoWTransferRecord *retry=[[TKWoWBackgroundDownloads shared] requestURL:record.url range:record.range limit:record.limit background:YES error:&reissue];
+            BOOL want=[self wantsBackground];
+            TKWoWTransferRecord *retry=[[TKWoWBackgroundDownloads shared] requestURL:record.url range:record.range limit:record.limit background:want error:&reissue];
             if(retry) {
                 [_lock lock];
                 if(_cancelled) { [_lock unlock]; [[TKWoWBackgroundDownloads shared] cancelRecord:retry]; break; }
@@ -514,9 +523,11 @@ static int CompareRanges(const void *a,const void *b) {
         [items addObject:@{@"url":url,@"offset":@(first.offset),@"length":@(end-first.offset),@"slices":slices}];
         i=last;
     }
-    // Download a window of ranges while earlier ones are consumed, so several
-    // transfers run at once (each background transfer is throttled on its own).
-    const NSUInteger window=4;
+    // Download a window of ranges while earlier ones are consumed. The fast
+    // foreground session is serial (parallel flows tested slower against the
+    // CDN); the background session runs several, since iOS throttles each
+    // background transfer individually.
+    const NSUInteger window=[self wantsBackground]?4:1;
     NSMutableArray<TKWoWTransferRecord *> *inFlight=[NSMutableArray new];
     NSMutableArray<NSNumber *> *inFlightOrder=[NSMutableArray new];
     __block NSUInteger next=0;
