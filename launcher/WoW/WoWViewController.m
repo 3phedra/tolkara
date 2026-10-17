@@ -436,6 +436,11 @@ static UIStackView *Stack(NSArray<UIView *> *views, CGFloat spacing) {
             (void)a; [self removeInstallation];
         }]];
     }
+    if(!_busy && !_starting && !_sessionUsed && [self hasDownloadedData]) {
+        [sheet addAction:[UIAlertAction actionWithTitle:@"Remove all downloaded game data" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a) {
+            (void)a; [self removeAllDownloadedData];
+        }]];
+    }
     [sheet addAction:[UIAlertAction actionWithTitle:@"Diagnostics and logs" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
         (void)a; [self diagnostics];
     }]];
@@ -502,6 +507,56 @@ static UIStackView *Stack(NSArray<UIView *> *views, CGFloat spacing) {
         dispatch_async(dispatch_get_main_queue(),^{
             [NSUserDefaults.standardUserDefaults removeObjectForKey:[@"WoWInstallRequested." stringByAppendingString:product[@"id"]]];
             [NSUserDefaults.standardUserDefaults removeObjectForKey:[@"WoWRepairRequested." stringByAppendingString:product[@"id"]]];
+            self->_busy=NO;
+            if(failure) {
+                UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"Could not remove all files" message:failure.localizedDescription preferredStyle:UIAlertControllerStyleAlert];
+                [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+                [self presentViewController:alert animated:YES completion:nil];
+            }
+            [self inspectLocal];
+        });
+    });
+}
+- (BOOL)hasDownloadedData {
+    return [NSFileManager.defaultManager fileExistsAtPath:[self installationRoot]];
+}
+- (void)removeAllDownloadedData {
+    UIAlertController *confirm=[UIAlertController alertControllerWithTitle:@"Remove all downloaded game data?"
+        message:@"Deletes every edition's files, the shared data cache, staged downloads, and recently deleted game files inside this app. The app itself and anything else you keep in its folder are not touched." preferredStyle:UIAlertControllerStyleAlert];
+    [confirm addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [confirm addAction:[UIAlertAction actionWithTitle:@"Remove all" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+        (void)action; [self performRemoveAllDownloadedData];
+    }]];
+    [self presentViewController:confirm animated:YES completion:nil];
+}
+- (void)performRemoveAllDownloadedData {
+    [self cancel]; _busy=YES; [self render];
+    TKAppLibrary *library=_library;
+    NSString *root=[self installationRoot];
+    NSString *documents=root.stringByDeletingLastPathComponent;
+    NSString *work=[documents stringByAppendingPathComponent:@".tolkara-updates"];
+    NSString *trash=[documents stringByAppendingPathComponent:@".Trash"];
+    dispatch_async(TKWoWUpdateQueue(),^{
+        NSError *failure=nil;
+        NSFileManager *fm=NSFileManager.defaultManager;
+        // The whole shared tree: every edition folder and the data cache.
+        if([fm fileExistsAtPath:root] && ![library removeApplicationFolder:@"World of Warcraft" error:&failure])
+            [fm removeItemAtPath:root error:&failure];
+        for(NSString *entry in [fm contentsOfDirectoryAtPath:work error:NULL])
+            [fm removeItemAtPath:[work stringByAppendingPathComponent:entry] error:NULL];
+        // The Files app moves deletions into the container's own .Trash, so
+        // deleted game data keeps occupying space until it is emptied. Remove
+        // only entries that are downloaded game data, never anything else.
+        NSSet *names=[NSSet setWithArray:@[@"World of Warcraft",@".build.info",@".flavor.info",@"Data",@"data",
+            @"indices",@"config",@"_classic_beta_",@"_classic_era_",@"_classic_",@"_retail_",@"_beta_",
+            @"WTF",@"Interface",@"Logs",@"Cache"]];
+        for(NSString *entry in [fm contentsOfDirectoryAtPath:trash error:NULL])
+            if([names containsObject:entry]) [fm removeItemAtPath:[trash stringByAppendingPathComponent:entry] error:NULL];
+        dispatch_async(dispatch_get_main_queue(),^{
+            for(NSDictionary *p in TKWoWProducts()) {
+                [[NSUserDefaults standardUserDefaults] removeObjectForKey:[@"WoWInstallRequested." stringByAppendingString:p[@"id"]]];
+                [[NSUserDefaults standardUserDefaults] removeObjectForKey:[@"WoWRepairRequested." stringByAppendingString:p[@"id"]]];
+            }
             self->_busy=NO;
             if(failure) {
                 UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"Could not remove all files" message:failure.localizedDescription preferredStyle:UIAlertControllerStyleAlert];
