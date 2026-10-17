@@ -43,7 +43,7 @@ NSString *const TKWoWBackgroundSessionIdentifier=@"org.tolkara.wow-updates";
 // but keeps running while the app is suspended.
 - (NSURLSession *)sessionForBackground:(BOOL)background {
     @synchronized(self) {
-        NSURLSession **slot=background?&_session:&_foreground;
+        NSURLSession * __strong *slot=background?&_session:&_foreground;
         if(!*slot) {
             NSURLSessionConfiguration *config=background?
                 [NSURLSessionConfiguration backgroundSessionConfigurationWithIdentifier:TKWoWBackgroundSessionIdentifier]:
