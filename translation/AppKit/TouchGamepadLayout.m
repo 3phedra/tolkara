@@ -12,6 +12,7 @@ static CGFloat Number(id value, CGFloat fallback) {
 @implementation AKGamepadLayout {
     NSUserDefaults *_defaults;
     NSMutableDictionary *_positions;
+    NSMutableDictionary<NSString *, NSNumber *> *_scales;
 }
 - (instancetype)initWithDefaults:(NSUserDefaults *)defaults {
     if ((self = [super init])) {
@@ -39,20 +40,41 @@ static CGFloat Number(id value, CGFloat fallback) {
             CGFloat x = Number(point[0],NAN), y = Number(point[1],NAN);
             if (isfinite(x) && isfinite(y)) _positions[key] = @[@(Clamp(x,0,1,0)),@(Clamp(y,0,1,0))];
         }
+        _scales = [NSMutableDictionary new];
+        id scales = values[@"scales"];
+        if ([scales isKindOfClass:NSDictionary.class]) for (NSString *key in scales) {
+            if (![key isKindOfClass:NSString.class]) continue;
+            CGFloat value = Number(scales[key],1);
+            if (isfinite(value) && value != 1) _scales[key] = @(Clamp(value,0.75,2.5,1));
+        }
     }
     return self;
 }
 - (void)setOpacity:(CGFloat)value { _opacity = Clamp(value,0.2,1,0.8); }
 - (void)setRearScale:(CGFloat)value { _rearScale = Clamp(value,0.8,1.5,1); }
 - (void)setFrontScale:(CGFloat)value { _frontScale = Clamp(value,0.65,1.4,1); }
+- (CGFloat)scaleForItem:(NSString *)item {
+    return _scales[item] ? _scales[item].doubleValue : 1;
+}
+- (void)setScale:(CGFloat)scale forItem:(NSString *)item {
+    if (![item isKindOfClass:NSString.class] || !item.length) return;
+    CGFloat value = Clamp(scale,0.75,2.5,1);
+    if (fabs(value-1) < 0.0001) [_scales removeObjectForKey:item];
+    else _scales[item] = @(value);
+}
 - (CGRect)frameForItem:(NSString *)item defaultFrame:(CGRect)frame inBounds:(CGRect)bounds {
-    CGFloat width = MAX(0,MIN(frame.size.width,bounds.size.width));
-    CGFloat height = MAX(0,MIN(frame.size.height,bounds.size.height));
-    CGFloat dx = MAX(0,bounds.size.width-width), dy = MAX(0,bounds.size.height-height);
+    CGFloat baseWidth = MAX(0,MIN(frame.size.width,bounds.size.width));
+    CGFloat baseHeight = MAX(0,MIN(frame.size.height,bounds.size.height));
+    CGFloat scale = [self scaleForItem:item];
+    CGFloat width = MAX(0,MIN(baseWidth*scale,bounds.size.width));
+    CGFloat height = MAX(0,MIN(baseHeight*scale,bounds.size.height));
+    CGFloat dx = MAX(0,bounds.size.width-baseWidth), dy = MAX(0,bounds.size.height-baseHeight);
     NSArray *point = _positions[item];
     CGFloat x = point ? [point[0] doubleValue]*dx : frame.origin.x-bounds.origin.x;
     CGFloat y = point ? [point[1] doubleValue]*dy : frame.origin.y-bounds.origin.y;
-    return CGRectMake(bounds.origin.x+Clamp(x,0,dx,0),bounds.origin.y+Clamp(y,0,dy,0),width,height);
+    CGFloat maxX = MAX(0,bounds.size.width-width), maxY = MAX(0,bounds.size.height-height);
+    x = MIN(Clamp(x,0,dx,0),maxX); y = MIN(Clamp(y,0,dy,0),maxY);
+    return CGRectMake(bounds.origin.x+x,bounds.origin.y+y,width,height);
 }
 - (void)moveItem:(NSString *)item toFrame:(CGRect)frame inBounds:(CGRect)bounds {
     CGFloat dx = MAX(0,bounds.size.width-frame.size.width), dy = MAX(0,bounds.size.height-frame.size.height);
@@ -63,13 +85,14 @@ static CGFloat Number(id value, CGFloat fallback) {
 - (void)save {
     [_defaults setObject:@{@"opacity":@(_opacity),@"rearScale":@(_rearScale),
         @"frontScale":@(_frontScale),@"hapticsEnabled":@(_hapticsEnabled),
-        @"performanceOverlayEnabled":@(_performanceOverlayEnabled),@"positions":_positions} forKey:LayoutKey];
+        @"performanceOverlayEnabled":@(_performanceOverlayEnabled),@"positions":_positions,
+        @"scales":_scales} forKey:LayoutKey];
     [NSNotificationCenter.defaultCenter postNotificationName:AKGamepadLayoutDidChangeNotification object:_defaults];
 }
 - (void)reset {
     self.opacity = 0.8; self.rearScale = 1; self.frontScale = 1;
     self.hapticsEnabled = YES;
     self.performanceOverlayEnabled = NO;
-    [_positions removeAllObjects]; [self save];
+    [_positions removeAllObjects]; [_scales removeAllObjects]; [self save];
 }
 @end

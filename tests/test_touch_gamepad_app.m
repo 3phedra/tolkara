@@ -131,8 +131,17 @@ static void Drain(void) { CFRunLoopRunInMode(kCFRunLoopDefaultMode,0.03,false); 
 - (CGPoint)translationInView:(UIView *)view { (void)view; return self.movement; }
 - (UIGestureRecognizerState)state { return self.testState; }
 @end
+@interface AKFixturePinch : UIPinchGestureRecognizer
+@property CGFloat testScale;
+@property UIGestureRecognizerState testState;
+@end
+@implementation AKFixturePinch
+- (CGFloat)scale { return self.testScale; }
+- (UIGestureRecognizerState)state { return self.testState; }
+@end
 @interface UIView (LayoutFixture)
 - (void)drag:(UIPanGestureRecognizer *)pan;
+- (void)resize:(UIPinchGestureRecognizer *)pinch;
 @end
 static void TestPreferences(void) {
     NSString *suite=[@"org.tolkara.layout-test." stringByAppendingString:NSUUID.UUID.UUIDString];
@@ -160,6 +169,21 @@ static void TestPreferences(void) {
     layout.performanceOverlayEnabled=YES; [layout save];
     layout=[[AKGamepadLayout alloc] initWithDefaults:defaults];
     assert(layout.opacity==.4 && !layout.hapticsEnabled && layout.performanceOverlayEnabled);
+    assert(CGRectEqualToRect([layout frameForItem:@"menu" defaultFrame:frame inBounds:bounds],frame));
+    [layout setScale:1.25 forItem:@"menu"]; [layout save];
+    layout=[[AKGamepadLayout alloc] initWithDefaults:defaults];
+    assert(fabs([layout scaleForItem:@"menu"]-1.25)<.001);
+    CGRect scaled=[layout frameForItem:@"menu" defaultFrame:frame inBounds:bounds];
+    assert(fabs(scaled.size.width-150)<.01 && fabs(scaled.size.height-150)<.01);
+    [layout moveItem:@"menu" toFrame:CGRectMake(CGRectGetMaxX(bounds)-frame.size.width,
+        CGRectGetMaxY(bounds)-frame.size.height,frame.size.width,frame.size.height) inBounds:bounds];
+    CGRect right=[layout frameForItem:@"menu" defaultFrame:frame inBounds:bounds];
+    assert(fabs(CGRectGetMaxX(right)-CGRectGetMaxX(bounds))<.01);
+    [layout moveItem:@"menu" toFrame:CGRectMake(CGRectGetMinX(bounds),CGRectGetMinY(bounds),
+        frame.size.width,frame.size.height) inBounds:bounds];
+    CGRect left=[layout frameForItem:@"menu" defaultFrame:frame inBounds:bounds];
+    assert(fabs(CGRectGetMinX(left)-CGRectGetMinX(bounds))<.01);
+    [layout reset]; assert(fabs([layout scaleForItem:@"menu"]-1)<.001);
     assert(CGRectEqualToRect([layout frameForItem:@"menu" defaultFrame:frame inBounds:bounds],frame));
     CGRect small=CGRectMake(0,0,220,120);
     assert(CGRectContainsRect(small,[layout frameForItem:@"menu" defaultFrame:frame inBounds:small]));
@@ -274,7 +298,35 @@ static void TestNativeInput(UIView *host, AKPreviewGamepad *manager) {
     pan.testState=UIGestureRecognizerStateEnded; [cluster.superview drag:pan];
     assert(cluster.frame.origin.x>before.origin.x && cluster.frame.origin.y<before.origin.y);
     [cluster removeGestureRecognizer:pan];
+    CGRect beforeResize=cluster.frame;
+    AKFixturePinch *pinch=[AKFixturePinch new]; [cluster addGestureRecognizer:pinch];
+    pinch.testScale=1; pinch.testState=UIGestureRecognizerStateBegan; [cluster.superview resize:pinch];
+    pinch.testScale=1.4; pinch.testState=UIGestureRecognizerStateChanged; [cluster.superview resize:pinch];
+    pinch.testState=UIGestureRecognizerStateEnded; [cluster.superview resize:pinch];
+    assert(cluster.frame.size.width>beforeResize.size.width+1);
+    [cluster removeGestureRecognizer:pinch];
+    UIView *rightCluster=Find(host,@"wolkara.layout.right");
+    AKFixturePinch *rightPinch=[AKFixturePinch new]; [rightCluster addGestureRecognizer:rightPinch];
+    rightPinch.testScale=1; rightPinch.testState=UIGestureRecognizerStateBegan; [rightCluster.superview resize:rightPinch];
+    rightPinch.testScale=1.4; rightPinch.testState=UIGestureRecognizerStateChanged; [rightCluster.superview resize:rightPinch];
+    rightPinch.testState=UIGestureRecognizerStateEnded; [rightCluster.superview resize:rightPinch];
+    [rightCluster removeGestureRecognizer:rightPinch];
+    AKFixturePan *leftEdge=[AKFixturePan new]; [cluster addGestureRecognizer:leftEdge];
+    leftEdge.testState=UIGestureRecognizerStateBegan; [cluster.superview drag:leftEdge];
+    leftEdge.movement=CGPointMake(-10000,0); leftEdge.testState=UIGestureRecognizerStateChanged; [cluster.superview drag:leftEdge];
+    leftEdge.testState=UIGestureRecognizerStateEnded; [cluster.superview drag:leftEdge];
+    [cluster removeGestureRecognizer:leftEdge];
+    AKFixturePan *rightEdge=[AKFixturePan new]; [rightCluster addGestureRecognizer:rightEdge];
+    rightEdge.testState=UIGestureRecognizerStateBegan; [rightCluster.superview drag:rightEdge];
+    rightEdge.movement=CGPointMake(10000,0); rightEdge.testState=UIGestureRecognizerStateChanged; [rightCluster.superview drag:rightEdge];
+    rightEdge.testState=UIGestureRecognizerStateEnded; [rightCluster.superview drag:rightEdge];
+    [rightCluster removeGestureRecognizer:rightEdge];
+    CGRect safe=UIEdgeInsetsInsetRect(cluster.superview.bounds,cluster.superview.safeAreaInsets);
+    assert(cluster.frame.origin.x>=CGRectGetMinX(safe)-.5);
+    assert(CGRectGetMaxX(rightCluster.frame)<=CGRectGetMaxX(safe)+.5);
+    assert(CGRectGetMaxX(rightCluster.frame)>=CGRectGetMaxX(safe)-1);
     AKGamepadLayout *saved=[[AKGamepadLayout alloc] initWithDefaults:NSUserDefaults.standardUserDefaults];
+    assert(fabs([saved scaleForItem:@"left"]-1.4)<.001);
     assert(fabs(saved.frontScale-1.3)<.001 && fabs(saved.opacity-.3)<.001);
     assert(!saved.hapticsEnabled);
     assert(saved.performanceOverlayEnabled);

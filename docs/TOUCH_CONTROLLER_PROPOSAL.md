@@ -54,7 +54,8 @@ buttons remain pinned at the bottom. The pointer icon toggles the trackpad.
   charging state, resident memory footprint and headroom. Tapping toggles
   between a compact pill and an expanded card; dragging repositions the HUD
   within the safe area and remembers its position across launches.
-- **Edit layout:** drag either stick/ring group, each rear button, or `+`.
+- **Edit layout:** drag either stick/ring group, each rear button, or `+`;
+  pinch a control to resize it independently of the global size sliders.
   Done editing exits the editor. Reset to defaults restores all sizes, opacity
   and positions, enables haptic feedback, and hides the performance overlay,
   without changing whether automatic controls are enabled.
@@ -66,10 +67,12 @@ buttons remain pinned at the bottom. The pointer icon toggles the trackpad.
 Settings release held input before opening and suppress game input while open
 or editing. Standalone buttons remain touchable in edit mode so their pan
 recognizers work; their game values are still blocked. Positions are normalized
-to the available safe area, saved locally, and clamped after rotation/resizing.
-The toolbar and editor exit remain fixed, so moved controls cannot strand the UI.
-Preferences use `WolkaraTouchLayoutV1` and contain no game or account data.
-Older saved layouts keep their positions and sizes and default to haptics on.
+to the available safe area, per-control scales are limited to 75–250%, saved
+locally, and both are clamped after rotation/resizing. The toolbar and editor
+exit remain fixed, so moved controls cannot strand the UI. Preferences use
+`WolkaraTouchLayoutV1` and contain no game or account data. Older saved layouts
+keep their positions and sizes, default to a 100% per-control scale and default
+to haptics on.
 The pointer symbol has a small optical offset to the right inside its existing
 button; the button's size, position and touch target are unchanged.
 

@@ -133,6 +133,9 @@ CGPoint AKTouchGamepadStickPosition(CGPoint point, CGSize size) {
 @implementation AKGamepadOverlay {
     NSDictionary<NSString *,UIView *> *_items;
     NSMutableDictionary<NSString *,NSValue *> *_dragOrigins;
+    NSMutableDictionary<NSString *,NSValue *> *_baseFrames;
+    CGFloat _pinchStartScale;
+    BOOL _pinching;
     UIView *_settings;
     UIButton *_editDone;
     UILabel *_hint;
@@ -148,6 +151,7 @@ CGPoint AKTouchGamepadStickPosition(CGPoint point, CGSize size) {
         self.layer.zPosition = 99999;
         _preferences = [[AKGamepadLayout alloc] initWithDefaults:NSUserDefaults.standardUserDefaults];
         _dragOrigins = [NSMutableDictionary new];
+        _baseFrames = [NSMutableDictionary new];
         _editGrid = [CAShapeLayer layer]; _editAxes = [CAShapeLayer layer];
         _editGrid.name = @"WolkaraEditGrid"; _editAxes.name = @"WolkaraEditAxes";
         for (CAShapeLayer *layer in @[_editGrid, _editAxes]) {
@@ -186,6 +190,8 @@ CGPoint AKTouchGamepadStickPosition(CGPoint point, CGSize size) {
             if ([item isKindOfClass:AKGamepadButton.class]) item.accessibilityIdentifier = [@"tolkara.gamepad." stringByAppendingString:((AKGamepadButton *)item).element];
             UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(drag:)];
             pan.delegate = self; [item addGestureRecognizer:pan];
+            UIPinchGestureRecognizer *pinch = [[UIPinchGestureRecognizer alloc] initWithTarget:self action:@selector(resize:)];
+            pinch.delegate = self; [item addGestureRecognizer:pinch];
         }
         _editDone = [UIButton buttonWithType:UIButtonTypeSystem];
         [_editDone setTitle:@"Done editing" forState:UIControlStateNormal];
@@ -194,7 +200,7 @@ CGPoint AKTouchGamepadStickPosition(CGPoint point, CGSize size) {
         _editDone.accessibilityIdentifier = @"wolkara.layout.done";
         [_editDone addTarget:self action:@selector(finishConfiguration) forControlEvents:UIControlEventTouchUpInside];
         [self addSubview:_editDone];
-        _hint = [UILabel new]; _hint.text = @"Drag controls to move them";
+        _hint = [UILabel new]; _hint.text = @"Drag to move · pinch to resize";
         _hint.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
         _hint.textColor = UIColor.whiteColor; _hint.textAlignment = NSTextAlignmentCenter;
         _hint.userInteractionEnabled = NO; [self addSubview:_hint];
@@ -230,6 +236,9 @@ CGPoint AKTouchGamepadStickPosition(CGPoint point, CGSize size) {
 - (void)place:(NSString *)name frame:(CGRect)frame baseSize:(CGSize)base safe:(CGRect)safe {
     UIView *item = _items[name];
     CGRect placed = [_preferences frameForItem:name defaultFrame:frame inBounds:safe];
+    CGFloat scale = [_preferences scaleForItem:name];
+    _baseFrames[name] = [NSValue valueWithCGRect:CGRectMake(placed.origin.x,placed.origin.y,
+        placed.size.width/MAX(scale,0.01),placed.size.height/MAX(scale,0.01))];
     item.transform = CGAffineTransformIdentity; item.bounds = (CGRect){CGPointZero,base};
     item.center = CGPointMake(CGRectGetMidX(placed),CGRectGetMidY(placed));
     item.transform = CGAffineTransformMakeScale(placed.size.width/base.width,placed.size.height/base.height);
@@ -290,11 +299,15 @@ CGPoint AKTouchGamepadStickPosition(CGPoint point, CGSize size) {
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
     (void)gestureRecognizer; return _editing;
 }
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
+    (void)gestureRecognizer; (void)otherGestureRecognizer; return _editing;
+}
 - (void)drag:(UIPanGestureRecognizer *)pan {
     NSString *name = [_items allKeysForObject:pan.view].firstObject;
-    if (!name || !_editing) return;
+    if (!name || !_editing || _pinching || pan.numberOfTouches > 1) return;
     if (pan.state == UIGestureRecognizerStateBegan) {
-        [_dragOrigins setObject:[NSValue valueWithCGRect:pan.view.frame] forKey:name]; [self reset];
+        NSValue *base = _baseFrames[name];
+        [_dragOrigins setObject:base ?: [NSValue valueWithCGRect:pan.view.frame] forKey:name]; [self reset];
     }
     CGRect frame = [_dragOrigins[name] CGRectValue];
     if (pan.state == UIGestureRecognizerStateCancelled) {
@@ -309,6 +322,22 @@ CGPoint AKTouchGamepadStickPosition(CGPoint point, CGSize size) {
         [_preferences save]; [_dragOrigins removeObjectForKey:name];
     }
 }
+- (void)resize:(UIPinchGestureRecognizer *)pinch {
+    NSString *name = [_items allKeysForObject:pinch.view].firstObject;
+    if (!name || !_editing) return;
+    if (pinch.state == UIGestureRecognizerStateBegan) {
+        _pinching = YES;
+        _pinchStartScale = [_preferences scaleForItem:name];
+    } else if (pinch.state == UIGestureRecognizerStateChanged) {
+        CGFloat value = _pinchStartScale * pinch.scale;
+        if (isfinite(value)) [_preferences setScale:value forItem:name];
+        [self setNeedsLayout]; [self layoutIfNeeded];
+    } else if (pinch.state == UIGestureRecognizerStateEnded || pinch.state == UIGestureRecognizerStateCancelled) {
+        [_preferences save];
+        _pinching = NO;
+    }
+}
+
 - (UILabel *)label:(NSString *)text {
     UILabel *label = [UILabel new]; label.text = text; label.textColor = UIColor.whiteColor;
     label.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium]; label.numberOfLines = 0;
@@ -360,7 +389,7 @@ CGPoint AKTouchGamepadStickPosition(CGPoint point, CGSize size) {
     UIStackView *editRow = [[UIStackView alloc] initWithArrangedSubviews:@[[self label:@"Edit layout"],_editSwitch]];
     editRow.axis = UILayoutConstraintAxisHorizontal; editRow.alignment = UIStackViewAlignmentCenter;
     [stack addArrangedSubview:editRow];
-    [stack addArrangedSubview:[self label:@"Move each shoulder button, +, or a stick with its ring. Changes are saved on this device."]];
+    [stack addArrangedSubview:[self label:@"Move each shoulder button, +, or a stick with its ring. Pinch a control to resize it. Changes are saved on this device."]];
     UIButton *reset = [UIButton buttonWithType:UIButtonTypeSystem]; [reset setTitle:@"Reset to defaults" forState:UIControlStateNormal];
     reset.accessibilityIdentifier = @"wolkara.controls.reset";
     [reset addTarget:self action:@selector(resetLayout) forControlEvents:UIControlEventTouchUpInside];
