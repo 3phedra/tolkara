@@ -9,6 +9,10 @@ CGPoint AKTouchGamepadStickPosition(CGPoint point, CGSize size);
 @interface AKTouchGamepad : NSObject
 - (instancetype)initWithHostView:(UIView *)host;
 @property(nonatomic) BOOL enabled;
+// Normally a physical controller takes priority and removes the touch gamepad.
+// A controller that reconnects but stops delivering input leaves no fallback,
+// so the settings can keep the touch pad available beside it.
+@property(nonatomic) BOOL showWithPhysicalController;
 @property(nonatomic) BOOL keyboardVisible;
 @property(nonatomic, readonly) BOOL visible;
 @property(nonatomic, readonly) BOOL configuring;

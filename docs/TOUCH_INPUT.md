@@ -3,8 +3,11 @@
 Optional keyboard and touch-trackpad buttons over a game, for a device without
 a keyboard or mouse. They are shown by default on iPhone and hidden on iPad;
 **On-Screen Controls**, under the hand button in the library's toolbar, turns
-them on or off. A guest that focuses a text field installs them on demand even
-where they default off, unless the switch was explicitly turned off.
+them on or off. The public WoW home does not show that library; its
+Settings -> **Touch controls** has the same two switches, **On-Screen Controls**
+and **Automatic Touch Gamepad**, applied from the next game start. A guest that
+focuses a text field installs them on demand even where they default off,
+unless the switch was explicitly turned off.
 
 The AppKit adapter provides four translucent toolbar buttons: pointer, keyboard,
 automatic touch controller and control settings (gear). The toolbar always stays
@@ -23,7 +26,12 @@ small rightward offset, without moving its touch target.
 The gamepad button enables automatic touch controls when no physical controller
 is connected, or turns them off. The custom layout provides two sticks, D-pad,
 ABXY, LB/LT/RB/RT and `+`; it hides and releases held input while the keyboard is
-open. See [touch controller details and validation](TOUCH_CONTROLLER_PROPOSAL.md).
+open. A physical controller takes priority: the touch gamepad is hidden while
+one is connected and returns after it disconnects, unless **Touch Gamepad With
+a Controller** is on (Settings -> Touch controls). That override is useful when
+a pad reconnects but stops delivering input. The guest is not restarted for a
+controller hot-plug; if a reconnected controller is not picked up, start the
+game again. See [touch controller details and validation](TOUCH_CONTROLLER_PROPOSAL.md).
 
 The pointer button toggles trackpad mode and appears cyan when enabled. The
 initial default is on for iPhone, off for iPad; a user's choice is saved

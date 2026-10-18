@@ -12,6 +12,7 @@
 #import "../WoW/Client.h"
 #import "LaunchProgressView.h"
 #import "NativeGuest.h"
+#import "CustomServerConfig.h"
 #import "SignedFileProbe.h"
 #import "StartupActivity.h"
 #import "../Cloud/SteamCloudCoordinator.h"
@@ -841,6 +842,23 @@ static BOOL PreparedFromOutside(void) { return hd_may_run_unsigned_code() || ng_
     const char *argv[64]; size_t argc=0;
     for (NSString *argument in launchArguments) if (argc<64) { argv[argc++]=argument.UTF8String; fprintf(log,"[host] argument %s\n",argument.UTF8String); }
     ng_set_arguments(argv,argc);
+    // Custom server: the portal lives in WTF/Config.wtf; the server key is
+    // installed in the client's heap by the runtime while it runs. Only the
+    // Forever beta has a profile this branch edits.
+    BOOL foreverBeta=[app.profile isEqualToString:@"wow-forever"] ||
+        [app.workingDirectory.lastPathComponent isEqualToString:@"_classic_beta_"];
+    TKCustomServerConfig *customServer=[TKCustomServerConfig current];
+    if (customServer.enabled && ![customServer isUsable] && foreverBeta)
+        fprintf(log,"[host] custom server is enabled but not configured; enter the auth host, key and group in Settings\n");
+    if ([customServer isUsable] && foreverBeta) {
+        NSError *customServerError=nil;
+        if (![customServer applyToGameDirectory:directory error:&customServerError])
+            fprintf(log,"[host] custom server config failed: %s\n",customServerError.localizedDescription.UTF8String);
+        if (!ng_set_custom_server(customServer.keyHex.UTF8String,(unsigned)customServer.group,customServer.portal.UTF8String))
+            fprintf(log,"[host] custom server key or group rejected; the portal was still written\n");
+        else
+            fprintf(log,"[host] custom server portal=%s group=%ld\n",customServer.portal.UTF8String,(long)customServer.group);
+    }
     // A profile's runtime libraries (opened by path, not linked) are placed with it.
     if (app.runtime) {
         NSString *runtime=TKDocumentsPath(app.runtime);

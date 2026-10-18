@@ -12,6 +12,21 @@
 
 NSApplication *NSApp;
 
+// A non-finite frame, size or scale must never reach the guest: the UIKit
+// layout pass can hand one over while the scene is changing, and the game's
+// UI treats the values as geometry it can index with.
+static bool AKFiniteSize(NSSize size) {
+    return isfinite(size.width) && isfinite(size.height) && size.width >= 0 && size.height >= 0;
+}
+static bool AKFiniteRect(NSRect rect) {
+    return isfinite(rect.origin.x) && isfinite(rect.origin.y) && AKFiniteSize(rect.size);
+}
+static void AKRejectGeometry(const char *where, NSRect rect) {
+    static unsigned logged;
+    if (logged < 8) { logged++; AKLog(@"%s: rejected non-finite geometry %.17g,%.17g %.17gx%.17g", where,
+        rect.origin.x, rect.origin.y, rect.size.width, rect.size.height); }
+}
+
 #pragma mark - NSResponder
 
 @implementation NSResponder
@@ -97,7 +112,11 @@ static NSPoint mouseScreenLocation;
 @implementation NSView { NSMutableArray<NSView *> *_subviews; NSMutableArray<NSDictionary *> *_cursorRects; NSMutableArray<NSTrackingArea *> *_trackingAreas; __weak NSView *_superview; }
 - (instancetype)init { return [self initWithFrame:CGRectZero]; }
 - (instancetype)initWithFrame:(NSRect)frame {
-    if ((self = [super init])) { _frame = frame; _bounds = (CGRect){CGPointZero, frame.size}; _subviews = [NSMutableArray new]; _cursorRects=[NSMutableArray new]; _trackingAreas=[NSMutableArray new]; _autoresizesSubviews=YES; }
+    if ((self = [super init])) {
+        if (!AKFiniteRect(frame)) { AKRejectGeometry("NSView initWithFrame", frame); frame = CGRectZero; }
+        _frame = frame; _bounds = (CGRect){CGPointZero, frame.size};
+        _subviews = [NSMutableArray new]; _cursorRects=[NSMutableArray new]; _trackingAreas=[NSMutableArray new]; _autoresizesSubviews=YES;
+    }
     return self;
 }
 - (CALayer *)makeBackingLayer { return [CALayer layer]; }
@@ -113,6 +132,7 @@ static NSPoint mouseScreenLocation;
 }
 - (void)setHidden:(BOOL)hidden { _hidden=hidden; _layer.hidden=hidden; }
 - (void)setFrame:(NSRect)f {
+    if (!AKFiniteRect(f)) { AKRejectGeometry("NSView setFrame", f); return; }
     NSSize oldSize=_bounds.size;
     _frame = f; _bounds.size = f.size;
     [CATransaction begin]; [CATransaction setDisableActions:YES];
@@ -141,7 +161,8 @@ static NSPoint mouseScreenLocation;
         view.frame=frame;
     }
 }
-- (void)setFrameSize:(NSSize)s { self.frame = (CGRect){_frame.origin, s}; }
+- (void)setFrameSize:(NSSize)s { if (!AKFiniteSize(s)) { AKRejectGeometry("NSView setFrameSize",(NSRect){_frame.origin,s}); return; } self.frame = (CGRect){_frame.origin, s}; }
+- (void)setBounds:(NSRect)b { if (!AKFiniteRect(b)) { AKRejectGeometry("NSView setBounds", b); return; } _bounds = b; }
 - (NSView *)superview { return _superview; }
 - (NSArray<NSView *> *)subviews { return [_subviews copy]; }
 - (void)addSubview:(NSView *)v {
@@ -360,6 +381,8 @@ static BOOL AKResponderIsTextClient(NSResponder *responder) {
         [host->_touchControls setGamepadVisible:visible];
     };
     _touchGamepad.enabled = _touchControls.gamepadEnabled;
+    NSNumber *gamepadWithController=[NSUserDefaults.standardUserDefaults objectForKey:@"TKTouchGamepadWithController"];
+    _touchGamepad.showWithPhysicalController = gamepadWithController ? gamepadWithController.boolValue : NO;
     [self touchTrackpadChanged:_touchControls.trackpadEnabled];
 }
 - (void)performanceOverlayLayoutChanged:(NSNotification *)note {
@@ -817,9 +840,10 @@ static void logLayer(CALayer *layer,unsigned depth) {
 - (id)screen { return NSScreen.mainScreen; }
 - (BOOL)isMiniaturized { return NO; }
 - (void)invalidateCursorRectsForView:(NSView *)view { [view discardCursorRects]; [view resetCursorRects]; }
-- (void)setContentSize:(NSSize)size { _contentRect.size=size; [_contentView setFrameSize:size]; }
+- (void)setContentSize:(NSSize)size { if (!AKFiniteSize(size)) { AKRejectGeometry("NSWindow setContentSize",(NSRect){CGPointZero,size}); return; } _contentRect.size=size; [_contentView setFrameSize:size]; }
 - (void)setFrame:(NSRect)frame display:(BOOL)display animate:(BOOL)animate {
     (void)display; (void)animate;
+    if (!AKFiniteRect(frame)) { AKRejectGeometry("NSWindow setFrame", frame); return; }
     _contentRect=frame;
     // UIKit owns the scene's available geometry. Translate desktop sizing into
     // that viewport, and notify the guest of the actual content dimensions.
@@ -828,7 +852,10 @@ static void logLayer(CALayer *layer,unsigned depth) {
 }
 - (void)setFrame:(NSRect)frame display:(BOOL)display { [self setFrame:frame display:display animate:NO]; }
 - (NSRect)frame { return _host ? (CGRect){CGPointZero, _host.bounds.size} : _contentRect; }
-- (CGFloat)backingScaleFactor { return (_uiWindow.screen ?: UIScreen.mainScreen).nativeScale; }
+- (CGFloat)backingScaleFactor {
+    CGFloat scale=(_uiWindow.screen ?: UIScreen.mainScreen).nativeScale;
+    return isfinite(scale) && scale>0 ? scale : 1;
+}
 - (BOOL)isKeyWindow { return _uiWindow.isKeyWindow; }
 - (BOOL)isVisible { return _uiWindow && !_uiWindow.hidden; }
 - (NSUInteger)occlusionState { return self.isVisible && _uiWindow.windowScene.activationState!=UISceneActivationStateBackground ? 2 : 0; }
@@ -848,9 +875,9 @@ static void logLayer(CALayer *layer,unsigned depth) {
 - (NSRect)convertRectToScreen:(NSRect)rect { rect.origin=[self convertPointToScreen:rect.origin];return rect; }
 - (void)setCollectionBehavior:(NSUInteger)b { _collectionBehavior=b; }
 - (NSUInteger)collectionBehavior { return _collectionBehavior; }
-- (void)setMinSize:(NSSize)size { _contentMinSize=size; }   // frame and content sizes coincide here
+- (void)setMinSize:(NSSize)size { if (AKFiniteSize(size)) _contentMinSize=size; }   // frame and content sizes coincide here
 - (NSSize)minSize { return _contentMinSize; }
-- (void)setFrameOrigin:(NSPoint)origin { _contentRect.origin=origin; }
+- (void)setFrameOrigin:(NSPoint)origin { if (!isfinite(origin.x) || !isfinite(origin.y)) { AKRejectGeometry("NSWindow setFrameOrigin",(NSRect){origin,CGSizeZero}); return; } _contentRect.origin=origin; }
 - (NSRect)frameRectForContentRect:(NSRect)rect { return rect; }
 - (NSRect)contentRectForFrameRect:(NSRect)rect { return rect; }
 + (NSRect)frameRectForContentRect:(NSRect)rect styleMask:(NSUInteger)style { (void)style; return rect; }
@@ -875,6 +902,7 @@ static void logLayer(CALayer *layer,unsigned depth) {
 }
 - (void)ak_hostBoundsChanged:(CGRect)b {
     if (CGSizeEqualToSize(b.size, CGSizeZero)) return;
+    if (!AKFiniteSize(b.size)) { AKRejectGeometry("ak_hostBoundsChanged", b); return; }
     // As AppKit: the view may keep its own scale, as Wine's does when it draws
     // one pixel a point.
     CALayer *layer = _contentView.layer; CGFloat scale = self.backingScaleFactor;

@@ -58,6 +58,19 @@ producing such a capture in the app is not wired yet (see
 
 Start with modest graphics settings.
 
+**Custom server (this fork).** Settings -> Custom server can point the client
+at a custom auth portal and install its group key in memory. This is an
+opt-in fork feature, not upstream behavior; see
+[docs/CUSTOM_SERVER.md](../../docs/CUSTOM_SERVER.md).
+
+**Runtime fixes in this fork.** The macOS client asks CoreText for
+`.SFCompact` and other Mac UI fonts. The runtime maps those names to the host
+system font; without that map CoreText substitutes Times New Roman, whose
+metrics crashed the spellbook and character UI. The AppKit bridge also drops
+non-finite frames, sizes and backing scales instead of passing them to the
+guest, and a `_sigtramp` stub keeps the client crash handler from turning a
+crash into a lockup.
+
 **Account risk.** Tolkara is not supported by Blizzard. Blizzard has
 historically tolerated Wine and Proton players, and Tolkara works the same way,
 but nothing guarantees that for your account. With Local signing, Tolkara also

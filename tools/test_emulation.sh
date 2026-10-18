@@ -110,6 +110,8 @@ build/emulation/test_arena_probe
 build/emulation/test_debugger_arena
 "${CC[@]}" tests/test_native_policy.c -o build/emulation/test_native_policy
 build/emulation/test_native_policy
+"${CC[@]}" -DCS_TEST runtime/CustomServer.c tests/test_custom_server.c -o build/emulation/test_custom_server
+build/emulation/test_custom_server
 "${CC[@]}" runtime/GuestMemory.c runtime/SignedImage.c tests/test_signed_image.c -o build/emulation/test_signed_image
 build/emulation/test_signed_image
 "${CC[@]}" -Ilauncher/App launcher/App/SignedFileProbe.c tests/test_signed_file_probe.c -o build/emulation/test_signed_file_probe

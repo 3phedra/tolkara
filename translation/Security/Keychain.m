@@ -5,7 +5,7 @@
 static NSArray *candidates;
 static BOOL extraRootsLoaded;
 static CFStringRef marker(void){return CFSTR("Tolkara public system certificate source");}
-// Extra roots for private servers: PEM certificates concatenated in
+// Extra roots for custom servers: PEM certificates concatenated in
 // Documents/extra-roots.pem are appended to the packaged macOS roots. They are
 // subject to the same check as every packaged root in AKCopySystemCertificates
 // (the iPad's own trust store must accept each candidate), so the file cannot

@@ -3,6 +3,7 @@
 #import "Installation.h"
 #import "Updater.h"
 #import "../App/LaunchProgressView.h"
+#import "../App/CustomServerConfig.h"
 
 static UIColor *Gold(void) { return [UIColor colorWithRed:0.88 green:0.73 blue:0.43 alpha:1]; }
 static UIColor *Muted(void) { return [UIColor colorWithRed:0.66 green:0.72 blue:0.78 alpha:1]; }
@@ -422,6 +423,145 @@ static UIStackView *Stack(NSArray<UIView *> *views, CGFloat spacing) {
     [sheet addAction:[UIAlertAction actionWithTitle:@"Language" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) { (void)a; [self choosePreference:NO]; }]];
     [self presentSheet:sheet anchor:_preferencesButton];
 }
+// The AppKit adapter reads these when the guest starts. The library's hand
+// button sets the first one, but the public home does not include the library,
+// so the same switch lives here.
+static NSString *const TKTouchControlsKey=@"AKTouchControls";
+static NSString *const TKTouchGamepadKey=@"TKTouchGamepadEnabled";
+static NSString *const TKTouchGamepadWithControllerKey=@"TKTouchGamepadWithController";
+static BOOL TKTouchControlsOn(void) {
+    NSNumber *saved=[NSUserDefaults.standardUserDefaults objectForKey:TKTouchControlsKey];
+    return saved ? saved.boolValue : UIDevice.currentDevice.userInterfaceIdiom==UIUserInterfaceIdiomPhone;
+}
+static BOOL TKTouchGamepadOn(void) {
+    NSNumber *saved=[NSUserDefaults.standardUserDefaults objectForKey:TKTouchGamepadKey];
+    return saved ? saved.boolValue : YES;
+}
+static BOOL TKTouchGamepadWithControllerOn(void) {
+    NSNumber *saved=[NSUserDefaults.standardUserDefaults objectForKey:TKTouchGamepadWithControllerKey];
+    return saved ? saved.boolValue : NO;
+}
+- (void)touchControlsMessage:(NSString *)message {
+    UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"Touch controls" message:message preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+- (void)touchControlsSettings {
+    BOOL controls=TKTouchControlsOn(), gamepad=TKTouchGamepadOn();
+    BOOL withController=TKTouchGamepadWithControllerOn();
+    UIAlertController *sheet=[UIAlertController alertControllerWithTitle:@"Touch controls"
+        message:@"Applied from the next game start. The toolbar stays at the top center. The touch gamepad appears when no physical controller is connected, or always with the last switch on."
+        preferredStyle:UIAlertControllerStyleActionSheet];
+    [sheet addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"On-Screen Controls: %@",controls?@"On":@"Off"] style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        (void)action;
+        BOOL enable=!controls;
+        [NSUserDefaults.standardUserDefaults setBool:enable forKey:TKTouchControlsKey];
+        if(enable) [NSUserDefaults.standardUserDefaults setBool:YES forKey:TKTouchGamepadKey];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.35*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
+            [self touchControlsMessage:enable?@"On-screen controls are on. Close Tolkara completely and start the game again.":@"On-screen controls are off. Close Tolkara completely and start the game again."];
+        });
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"Automatic Touch Gamepad: %@",gamepad?@"On":@"Off"] style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        (void)action;
+        BOOL enable=!gamepad;
+        [NSUserDefaults.standardUserDefaults setBool:enable forKey:TKTouchGamepadKey];
+        if(enable) [NSUserDefaults.standardUserDefaults setBool:YES forKey:TKTouchControlsKey];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.35*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
+            [self touchControlsMessage:enable?@"Automatic touch gamepad is on and on-screen controls are on. Close Tolkara completely and start the game again.":@"Automatic touch gamepad is off. Close Tolkara completely and start the game again."];
+        });
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"Touch Gamepad With a Controller: %@",withController?@"On":@"Off"] style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        (void)action;
+        BOOL enable=!withController;
+        [NSUserDefaults.standardUserDefaults setBool:enable forKey:TKTouchGamepadWithControllerKey];
+        if(enable) {
+            [NSUserDefaults.standardUserDefaults setBool:YES forKey:TKTouchGamepadKey];
+            [NSUserDefaults.standardUserDefaults setBool:YES forKey:TKTouchControlsKey];
+        }
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.35*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
+            [self touchControlsMessage:enable?@"The touch gamepad will stay available beside a physical controller. Close Tolkara completely and start the game again.":@"The touch gamepad hides while a physical controller is connected. Close Tolkara completely and start the game again."];
+        });
+    }]];
+    [self presentSheet:sheet anchor:nil];
+}
+- (NSString *)wowForeverDirectory {
+    if (![_product[@"id"] isEqualToString:@"wow_classic_beta"]) return nil;
+    NSError *error=nil;
+    TKApp *app=_installation.app;
+    NSString *directory=app?[_library workingDirectoryForApp:app error:&error]:nil;
+    if (directory) return directory;
+    NSString *folder=_product[@"folder"];
+    if (!folder.length) return nil;
+    NSString *candidate=[[NSHomeDirectory() stringByAppendingPathComponent:@"Documents/World of Warcraft"] stringByAppendingPathComponent:folder];
+    return [NSFileManager.defaultManager fileExistsAtPath:candidate] ? candidate : nil;
+}
+- (void)customServerError:(NSString *)message {
+    UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"Custom server" message:message preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+- (void)configureCustomServer {
+    TKCustomServerConfig *config=[TKCustomServerConfig current];
+    UIAlertController *sheet=[UIAlertController alertControllerWithTitle:@"Custom server"
+        message:@"Connects the Forever beta to a custom auth server. Enter its auth host, the 64-digit Ed25519 key used by its login certificate, and the client certificate group. The portal is written to WTF/Config.wtf; the key is installed in the game's memory for this session only. Restart the game after changing this."
+        preferredStyle:UIAlertControllerStyleAlert];
+    [sheet addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.text=config.portal;
+        field.placeholder=@"auth.example.com";
+        field.autocapitalizationType=UITextAutocapitalizationTypeNone;
+        field.autocorrectionType=UITextAutocorrectionTypeNo;
+        field.keyboardType=UIKeyboardTypeURL;
+        field.clearButtonMode=UITextFieldViewModeWhileEditing;
+    }];
+    [sheet addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.text=config.keyHex;
+        field.placeholder=@"64 hex digits";
+        field.autocapitalizationType=UITextAutocapitalizationTypeAllCharacters;
+        field.autocorrectionType=UITextAutocorrectionTypeNo;
+        field.keyboardType=UIKeyboardTypeASCIICapable;
+        field.clearButtonMode=UITextFieldViewModeWhileEditing;
+        field.font=[UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightRegular];
+    }];
+    [sheet addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.text=[@(config.group) stringValue];
+        field.placeholder=@"8";
+        field.autocorrectionType=UITextAutocorrectionTypeNo;
+        field.keyboardType=UIKeyboardTypeNumberPad;
+        field.clearButtonMode=UITextFieldViewModeWhileEditing;
+    }];
+    __weak TKWoWViewController *weakSelf=self;
+    __weak UIAlertController *weakSheet=sheet;
+    void (^save)(BOOL)=^(BOOL enable) {
+        TKWoWViewController *strongSelf=weakSelf;
+        UIAlertController *strongSheet=weakSheet;
+        if (!strongSelf || !strongSheet.textFields.count) return;
+        NSString *portal=[strongSheet.textFields[0].text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        NSString *key=[strongSheet.textFields[1].text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        NSInteger group=[strongSheet.textFields[2].text integerValue];
+        if (enable && (!portal.length || ![TKCustomServerConfig validKey:key] || group < 1 || group > 12)) {
+            [strongSelf customServerError:@"Enter the auth host, the server's 64-digit key and a certificate group from 1 to 12."];
+            return;
+        }
+        if (portal.length) config.portal=portal;
+        if ([TKCustomServerConfig validKey:key]) config.keyHex=key.uppercaseString;
+        if (group >= 1 && group <= 12) config.group=group;
+        config.enabled=enable;
+        NSError *error=nil;
+        if (![config save:&error]) { [strongSelf customServerError:error.localizedDescription]; return; }
+        NSString *directory=[strongSelf wowForeverDirectory];
+        if (directory && (![config applyToGameDirectory:directory error:&error]))
+            [strongSelf customServerError:error.localizedDescription];
+        [strongSelf refresh];
+    };
+    [sheet addAction:[UIAlertAction actionWithTitle:config.enabled?@"Save":@"Save and enable" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        (void)action; save(YES);
+    }]];
+    if (config.enabled) [sheet addAction:[UIAlertAction actionWithTitle:@"Disable" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+        (void)action; save(NO);
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:sheet animated:YES completion:nil];
+}
 - (void)settings {
     UIAlertController *sheet=[UIAlertController alertControllerWithTitle:@"Settings"
         message:@"Updates install automatically while this app is open. Settings and addons are preserved. Startup preparation is separate from downloading updates." preferredStyle:UIAlertControllerStyleActionSheet];
@@ -445,6 +585,14 @@ static UIStackView *Stack(NSArray<UIView *> *views, CGFloat spacing) {
             (void)a; [self removeAllDownloadedData];
         }]];
     }
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Touch controls" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+        (void)a; [self touchControlsSettings];
+    }]];
+    TKCustomServerConfig *customServer=[TKCustomServerConfig current];
+    NSString *customTitle=[customServer isUsable]?[NSString stringWithFormat:@"Custom server: %@",customServer.portal]:@"Custom server: off";
+    [sheet addAction:[UIAlertAction actionWithTitle:customTitle style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+        (void)a; [self configureCustomServer];
+    }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"Diagnostics and logs" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
         (void)a; [self diagnostics];
     }]];

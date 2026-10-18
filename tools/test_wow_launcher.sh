@@ -30,3 +30,8 @@ build/wow-launcher/test_wow_verification
 xcrun clang -fobjc-arc -Wall -Wextra -Werror -O2 -framework Foundation -lz \
     launcher/WoW/Manifest.m launcher/WoW/CASC.m launcher/WoW/Client.m tools/wow_cdn.m \
     -o build/wow-launcher/wow_cdn
+xcrun clang -fobjc-arc -Wall -Wextra -Werror -O1 -g \
+    -fsanitize=address,undefined -fno-omit-frame-pointer -framework Foundation \
+    launcher/App/CustomServerConfig.m tests/test_custom_server_config.m \
+    -o build/wow-launcher/test_custom_server_config
+build/wow-launcher/test_custom_server_config

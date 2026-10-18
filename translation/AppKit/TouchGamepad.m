@@ -529,7 +529,7 @@ CGPoint AKTouchGamepadStickPosition(CGPoint point, CGSize size) {
         if (![self wantsController]) { _cancelConnect = YES; [_virtualController disconnect]; }
         return;
     }
-    if (![self wantsController] || [self hasPhysicalController]) {
+    if (![self wantsController] || ([self hasPhysicalController] && !_showWithPhysicalController)) {
         [self disconnectController]; return;
     }
     if (_virtualController || _failed) return;
@@ -544,7 +544,8 @@ CGPoint AKTouchGamepadStickPosition(CGPoint point, CGSize size) {
             self->_connecting = NO;
             BOOL cancelled = self->_cancelConnect;
             self->_cancelConnect = NO;
-            if (error || cancelled || ![self wantsController] || [self hasPhysicalController]) {
+            if (error || cancelled || ![self wantsController] ||
+                ([self hasPhysicalController] && !self->_showWithPhysicalController)) {
                 if (error) NSLog(@"[TouchGamepad] Connection failed: %@ (%ld)",error.domain,(long)error.code);
                 self->_failed = error != nil;
                 [self disconnectController];
@@ -570,6 +571,9 @@ CGPoint AKTouchGamepadStickPosition(CGPoint point, CGSize size) {
 }
 - (void)setEnabled:(BOOL)enabled {
     _enabled = enabled; _failed = NO; [self refresh];
+}
+- (void)setShowWithPhysicalController:(BOOL)show {
+    _showWithPhysicalController = show; [self refresh];
 }
 - (void)setKeyboardVisible:(BOOL)visible {
     _keyboardVisible = visible; [self refresh];
