@@ -154,6 +154,29 @@ bool ng_reserve_arena(FILE *log) {
     return false;
 }
 #define LOG(...) do { fprintf(guest.log, __VA_ARGS__); fflush(guest.log); } while (0)
+// Opt-in diagnostic: after the unpacking initializer returns, copy the entire
+// unpacked executable arena next to the guest log. The flag is removed so a
+// launch dumps at most once; the file contains no game data, only code pages.
+static void maybe_dump_guest_arena(void) {
+    NSString *flag=[NSHomeDirectory() stringByAppendingPathComponent:@"Documents/dump-guest-arena"];
+    if (![NSFileManager.defaultManager fileExistsAtPath:flag]) return;
+    NSString *path=[NSHomeDirectory() stringByAppendingPathComponent:@"Documents/guest-arena.bin"];
+    int fd=open(path.fileSystemRepresentation,O_WRONLY|O_CREAT|O_TRUNC,0600);
+    if(fd<0) { LOG("[native] guest arena dump open failed errno=%d\n",errno); return; }
+    const uint8_t *bytes=(const uint8_t *)guest.arena.executable;
+    size_t size=guest.arena.size, offset=0;
+    while(offset<size) {
+        size_t chunk=MIN(size-offset,(size_t)(1u<<20));
+        ssize_t written=write(fd,bytes+offset,chunk);
+        if(written<=0) break;
+        offset+=(size_t)written;
+    }
+    close(fd);
+    [NSFileManager.defaultManager removeItemAtPath:flag error:NULL];
+    LOG("[native] guest arena dumped %zu/%zu bytes base=%p slide=%#llx preferred_base=%#llx\n",
+        offset,size,(void *)guest.base,(unsigned long long)guest.slide,
+        (unsigned long long)(guest.base-guest.slide));
+}
 static void log_once(const char *format, ...) __attribute__((format(printf,1,2)));
 static unsigned trace_tid(void);
 __attribute__((noinline,used,visibility("default")))
@@ -2079,6 +2102,7 @@ bool ng_initialize(const char *path, const char *frameworks, const char *library
         if (guest.image.initializer_count) {
             ((void (*)(int,const char **,const char **,const char **))initializer)(argc,argv,env,apple);
             LOG("[native] first original initializer returned\n");
+            maybe_dump_guest_arena();
             startup_count(1);
         }
         ok=true;
