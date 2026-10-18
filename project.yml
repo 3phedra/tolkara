@@ -54,6 +54,7 @@ targetTemplates:
       - path: translation/Metal/LibraryContainer.m
     dependencies:
       - sdk: Security.framework
+      - sdk: UniformTypeIdentifiers.framework
       - sdk: libz.tbd
       # The Diagnostics menu's controller check asks the same framework a
       # guest's gamepad code uses (host-side; see ControllerProbe.m).

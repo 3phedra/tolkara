@@ -35,3 +35,23 @@ xcrun clang -fobjc-arc -Wall -Wextra -Werror -O1 -g \
     launcher/App/CustomServerConfig.m tests/test_custom_server_config.m \
     -o build/wow-launcher/test_custom_server_config
 build/wow-launcher/test_custom_server_config
+xcrun clang -fobjc-arc -Wall -Wextra -Werror -O1 -g \
+    -fsanitize=address,undefined -fno-omit-frame-pointer -framework Foundation -lz \
+    -Ilauncher/WoW/AddOns launcher/WoW/AddOns/AddOnsModel.m \
+    launcher/WoW/AddOns/AddOnsTOC.m launcher/WoW/AddOns/AddOnsZip.m \
+    launcher/WoW/AddOns/AddOnsManager.m \
+    launcher/WoW/AddOns/AddOnsWorkarounds.m tests/test_addons.m \
+    -o build/wow-launcher/test_addons
+xcrun clang -fobjc-arc -Wall -Wextra -Werror -O1 -g \
+    -fsanitize=address,undefined -fno-omit-frame-pointer \
+    -framework Foundation -framework Security -Ilauncher/WoW/AddOns \
+    launcher/WoW/AddOns/AddOnsModel.m launcher/WoW/AddOns/AddOnsSources.m \
+    tests/test_wago_source.m -o build/wow-launcher/test_wago_source
+build/wow-launcher/test_wago_source
+xcrun clang -fobjc-arc -Wall -Wextra -Werror -O1 -g \
+    -fsanitize=address,undefined -fno-omit-frame-pointer \
+    -framework Foundation -framework Security -Ilauncher/WoW/AddOns \
+    launcher/WoW/AddOns/AddOnsModel.m launcher/WoW/AddOns/AddOnsSources.m \
+    tests/test_github_source.m -o build/wow-launcher/test_github_source
+build/wow-launcher/test_github_source
+build/wow-launcher/test_addons

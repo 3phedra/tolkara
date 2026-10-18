@@ -4,6 +4,9 @@
 #import "Updater.h"
 #import "../App/LaunchProgressView.h"
 #import "../App/CustomServerConfig.h"
+#import "AddOns/AddOnsManager.h"
+#import "AddOns/AddOnsSources.h"
+#import "AddOns/AddOnsViewController.h"
 
 static UIColor *Gold(void) { return [UIColor colorWithRed:0.88 green:0.73 blue:0.43 alpha:1]; }
 static UIColor *Muted(void) { return [UIColor colorWithRed:0.66 green:0.72 blue:0.78 alpha:1]; }
@@ -87,8 +90,10 @@ static UIStackView *Stack(NSArray<UIView *> *views, CGFloat spacing) {
     UILabel *editionLabel=Label(11,UIFontWeightSemibold,Muted()); editionLabel.text=@"GAME EDITION";
     _editionButton=[self button:@"wow.edition" action:@selector(chooseEdition)];
     _preferencesButton=[self button:@"wow.preferences" action:@selector(preferences)];
+    UIButton *addOnsButton=[self button:@"wow.addons" action:@selector(addOns)];
+    [addOnsButton setTitle:@"Add-ons" forState:UIControlStateNormal];
     _compatibilityLabel=Label(12,UIFontWeightRegular,Muted());
-    UIStackView *left=Stack(@[title,editionLabel,_editionButton,_preferencesButton,_compatibilityLabel],12);
+    UIStackView *left=Stack(@[title,editionLabel,_editionButton,_preferencesButton,addOnsButton,_compatibilityLabel],12);
     [left setCustomSpacing:24 afterView:title];
 
     _activity=[[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
@@ -484,8 +489,7 @@ static BOOL TKTouchGamepadWithControllerOn(void) {
     }]];
     [self presentSheet:sheet anchor:nil];
 }
-- (NSString *)wowForeverDirectory {
-    if (![_product[@"id"] isEqualToString:@"wow_classic_beta"]) return nil;
+- (NSString *)selectedGameDirectory {
     NSError *error=nil;
     TKApp *app=_installation.app;
     NSString *directory=app?[_library workingDirectoryForApp:app error:&error]:nil;
@@ -494,6 +498,10 @@ static BOOL TKTouchGamepadWithControllerOn(void) {
     if (!folder.length) return nil;
     NSString *candidate=[[NSHomeDirectory() stringByAppendingPathComponent:@"Documents/World of Warcraft"] stringByAppendingPathComponent:folder];
     return [NSFileManager.defaultManager fileExistsAtPath:candidate] ? candidate : nil;
+}
+- (NSString *)wowForeverDirectory {
+    if (![_product[@"id"] isEqualToString:@"wow_classic_beta"]) return nil;
+    return [self selectedGameDirectory];
 }
 - (void)customServerError:(NSString *)message {
     UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"Custom server" message:message preferredStyle:UIAlertControllerStyleAlert];
@@ -561,6 +569,33 @@ static BOOL TKTouchGamepadWithControllerOn(void) {
     }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
     [self presentViewController:sheet animated:YES completion:nil];
+}
+- (void)addOns {
+    if (_busy || _starting) {
+        UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"Add-ons" message:@"Wait for the current update or startup to finish." preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+        [self presentViewController:alert animated:YES completion:nil];
+        return;
+    }
+    if (_sessionUsed) {
+        UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"Add-ons" message:@"Close and reopen Tolkara after a game session before managing add-ons." preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+        [self presentViewController:alert animated:YES completion:nil];
+        return;
+    }
+    NSString *directory=[self selectedGameDirectory];
+    if (!directory.length) {
+        UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"Add-ons" message:@"Install the selected game edition before managing add-ons." preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+        [self presentViewController:alert animated:YES completion:nil];
+        return;
+    }
+    TKAddOnsManager *manager=[[TKAddOnsManager alloc] initWithGameDirectory:directory];
+    TKAddOnsSources *sources=[[TKAddOnsSources alloc] initWithGameVersion:manager.gameVersion wagoFlavor:manager.wagoFlavor];
+    TKAddOnsViewController *addons=[[TKAddOnsViewController alloc] initWithManager:manager sources:sources];
+    UINavigationController *nav=[[UINavigationController alloc] initWithRootViewController:addons];
+    nav.modalPresentationStyle=UIModalPresentationPageSheet;
+    [self presentViewController:nav animated:YES completion:nil];
 }
 - (void)settings {
     UIAlertController *sheet=[UIAlertController alertControllerWithTitle:@"Settings"
