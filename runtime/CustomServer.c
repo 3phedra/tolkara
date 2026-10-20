@@ -282,6 +282,12 @@ static bool cs_layout_at(uintptr_t base) {
 // Replace the configured group's key in a layout-validated store. Unlike the
 // known-key path, this does not require the client's key to be one we know.
 static void cs_patch_layout(uintptr_t base) {
+    // The 1..12 group-number shape also occurs in a runtime region/server
+    // table on the host heap. Patching that table overwrites a pointer at
+    // key+16 and crashes the client at 0x7036458368. Only the guest image's
+    // static copies are safe to patch by shape; heap copies must pass the
+    // key-validated paths (cs_patch_at/cs_target_entry_valid).
+    if (base>=0x4000000000ULL) return;
     uintptr_t key=base+(sGroup-1)*CS_ENTRY_BYTES+4;
     if (cs_own_data(key)) return;
     uint8_t current[CS_KEY_BYTES];
