@@ -98,7 +98,7 @@ CGPathRef AKCreateCursorPath(CGImageRef image, CGSize size, CGPoint hotSpot) {
     CGColorSpaceRelease(space); CGDataProviderRelease(provider);
     if(!next) return NULL;
     [_snapshots addObject:[NSValue valueWithPointer:next]];
-    return next;
+    return CGImageRetain(next);
 }
 - (CGBitmapInfo)ak_bitmapInfo {
     BOOL first=_bitmapFormat&1,straight=_bitmapFormat&2;
