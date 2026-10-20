@@ -36,7 +36,6 @@
 #define CS_SCAN_BUDGET (2ull * 1024u * 1024u * 1024u)
 #define CS_PATCH_LIMIT 64
 #define CS_ACTIVITY_MS 30000
-#define CS_LAYOUT_WINDOW_MS 30000
 #define CS_MAX_PORTAL_ADDRESSES 8
 
 static const uint8_t kKnownKeys[CS_KEYS][CS_KEY_BYTES] = {
@@ -246,8 +245,21 @@ static bool cs_track(uintptr_t address) {
     return true;
 }
 
+// The desktop launcher's tolerant fallback only writes a group key when the
+// whole entry looks like the certificate store entry: group 8, flag 0, and
+// zero in the last two padding bytes. Byte 37 is not checked; the macOS build
+// does not use the Windows 7f 00 00 tail.
+static bool cs_entry8_ok(uintptr_t key) {
+    if (key<4 || (key&3)) return false;
+    uint8_t raw[CS_ENTRY_BYTES];
+    if (!cs_read(key-4,raw,sizeof raw)) return false;
+    uint32_t group;
+    memcpy(&group,raw,sizeof group);
+    return group==sGroup && raw[36]==kFlags[sGroup-1] && raw[38]==0 && raw[39]==0;
+}
+
 static bool cs_patch_at(uintptr_t address) {
-    if (cs_own_data(address)) return false;
+    if (cs_own_data(address) || !cs_entry8_ok(address)) return false;
     uint8_t current[CS_KEY_BYTES];
     if (!cs_read(address,current,sizeof current)) return false;
     if (!memcmp(current,sServerKey,sizeof current)) { cs_track(address); return true; }
@@ -259,48 +271,6 @@ static bool cs_patch_at(uintptr_t address) {
     cs_track(address);
     cs_log("group %u key installed at 0x%llx",sGroup,(unsigned long long)address);
     return true;
-}
-
-// The store's group numbers alone identify the contiguous layout even when a
-// client build changes the keys themselves: 1..12 at 40-byte strides.
-static bool cs_layout_bytes(const uint8_t *raw, size_t length) {
-    if (length<CS_STORE_BYTES) return false;
-    for (size_t entry=0;entry<CS_KEYS;entry++) {
-        uint32_t group;
-        memcpy(&group,raw+entry*CS_ENTRY_BYTES,sizeof group);
-        if (group!=(uint32_t)entry+1) return false;
-    }
-    return true;
-}
-
-static bool cs_layout_at(uintptr_t base) {
-    if (base&3) return false;
-    uint8_t raw[CS_STORE_BYTES];
-    if (!cs_read(base,raw,sizeof raw)) return false;
-    return cs_layout_bytes(raw,sizeof raw);
-}
-
-// Replace the configured group's key in a layout-validated store. Unlike the
-// known-key path, this does not require the client's key to be one we know.
-static void cs_patch_layout(uintptr_t base) {
-    // The static cert store copies exist at startup. After the first half
-    // minute the same 1..12 shape also shows up in runtime region/server
-    // tables; patching those overwrites a pointer at key+16 and crashes the
-    // client (0x7036458368 and 0x122F9598C). Patch by shape only during the
-    // startup window; later copies must pass the key-validated paths
-    // (cs_patch_at/cs_target_entry_valid).
-    if (!sStarted || cs_now_ms()-sStarted>CS_LAYOUT_WINDOW_MS) return;
-    if (base>=0x4000000000ULL) return;
-    uintptr_t key=base+(sGroup-1)*CS_ENTRY_BYTES+4;
-    if (cs_own_data(key)) return;
-    uint8_t current[CS_KEY_BYTES];
-    if (!cs_read(key,current,sizeof current)) return;
-    if (!memcmp(current,sServerKey,sizeof current)) { cs_track(key); return; }
-    if (!cs_write(key,sServerKey,sizeof sServerKey)) return;
-    uint8_t check[CS_KEY_BYTES];
-    if (!cs_read(key,check,sizeof check) || memcmp(check,sServerKey,sizeof check)) return;
-    cs_track(key);
-    cs_log("group %u key installed at 0x%llx (certificate store layout)",sGroup,(unsigned long long)key);
 }
 
 // The contiguous layout: 12 entries, each group number, key, flag and tail.
@@ -337,13 +307,7 @@ static size_t cs_search(const uint8_t *haystack, size_t length, const uint8_t *n
 // A target key is only replaced when it belongs to a certificate store: its
 // own entry validates, or one of the other known keys is close by.
 static bool cs_target_entry_valid(uintptr_t key) {
-    if (key>=4 && (key&3)==0) {
-        uint32_t group=0;
-        uint8_t tail[4];
-        if (cs_read(key-4,&group,sizeof group) && group==sGroup &&
-            cs_read(key+CS_KEY_BYTES,tail,sizeof tail) &&
-            tail[0]==kFlags[sGroup-1] && cs_tail_ok(tail+1)) return true;
-    }
+    if (cs_entry8_ok(key)) return true;
     size_t size = CS_NEAR*2;
     uintptr_t start = key>CS_NEAR?key-CS_NEAR:0;
     uint8_t *window=(uint8_t *)malloc(size);
@@ -426,22 +390,9 @@ static void cs_search_pattern(uintptr_t base, const uint8_t *buffer, size_t leng
 }
 
 static void cs_search_buffer(uintptr_t base, const uint8_t *buffer, size_t length) {
-    // The group numbers find the store whatever its keys are; the known-key
-    // paths then cover a store that is not one contiguous array.
-    static const uint8_t one[4]={1,0,0,0};
-    size_t position=0;
-    while (position+sizeof one<=length) {
-        const uint8_t *hit=(const uint8_t *)memmem(buffer+position,length-position,one,sizeof one);
-        if (!hit) break;
-        position=(size_t)(hit-buffer);
-        uintptr_t address=base+position;
-        if ((address&3)==0) {
-            bool layout = position+CS_STORE_BYTES<=length ?
-                cs_layout_bytes(buffer+position,length-position) : cs_layout_at(address);
-            if (layout) cs_patch_layout(address);
-        }
-        position++;
-    }
+    // Only exact known-key copies are considered. A group-number shape alone
+    // is not enough: runtime region/server tables have the same 1..12 at
+    // 40-byte strides and corrupting one crashes the client.
     cs_search_pattern(base,buffer,length,kKnownKeys[0],true);
     if (sGroup!=1) cs_search_pattern(base,buffer,length,kKnownKeys[sGroup-1],false);
     cs_search_pattern(base,buffer,length,sServerKey,false);
