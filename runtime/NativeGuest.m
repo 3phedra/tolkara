@@ -30,6 +30,7 @@ static NativeCodeMemory local_quarantine;
 #import <objc/runtime.h>
 #include <dirent.h>
 #include <errno.h>
+#include <limits.h>
 #include <libkern/OSCacheControl.h>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -177,6 +178,67 @@ static void maybe_dump_guest_arena(void) {
         offset,size,(void *)guest.base,(unsigned long long)guest.slide,
         (unsigned long long)(guest.base-guest.slide));
 }
+static char guest_crash_dump_flag[PATH_MAX];
+static char guest_crash_dump_state[PATH_MAX];
+static char guest_crash_dump_memory[PATH_MAX];
+static bool guest_crash_dump_enabled;
+
+static void prepare_guest_crash_dump(void) {
+    NSString *documents=[NSHomeDirectory() stringByAppendingPathComponent:@"Documents"];
+    snprintf(guest_crash_dump_flag,sizeof guest_crash_dump_flag,"%s/dump-guest-crash",documents.fileSystemRepresentation);
+    snprintf(guest_crash_dump_state,sizeof guest_crash_dump_state,"%s/guest-crash-state.txt",documents.fileSystemRepresentation);
+    snprintf(guest_crash_dump_memory,sizeof guest_crash_dump_memory,"%s/guest-crash-memory.bin",documents.fileSystemRepresentation);
+    guest_crash_dump_enabled=access(guest_crash_dump_flag,F_OK)==0;
+}
+
+static void guest_dump_page(FILE *text,int fd,uintptr_t page,uintptr_t *pages,int *count) {
+    for(int i=0;i<*count;i++) if(pages[i]==page) return;
+    unsigned char buffer[0x1000];
+    vm_size_t got=0;
+    if(vm_read_overwrite(mach_task_self(),(vm_address_t)page,sizeof buffer,(vm_address_t)buffer,&got)!=KERN_SUCCESS || !got) return;
+    off_t offset=lseek(fd,0,SEEK_END);
+    if(offset<0 || write(fd,buffer,got)!=(ssize_t)got) return;
+    fprintf(text,"mem %#llx %#zx %#llx\n",(unsigned long long)page,(size_t)got,(unsigned long long)offset);
+    if(*count<64) pages[(*count)++]=page;
+}
+
+static void guest_dump_region(FILE *text,int fd,uintptr_t address,size_t length,uintptr_t *pages,int *count) {
+    if(!address || !length) return;
+    uintptr_t first=address & ~(uintptr_t)0xFFF;
+    uintptr_t last=(address+length+0xFFF) & ~(uintptr_t)0xFFF;
+    for(uintptr_t page=first;page<last;page+=0x1000) guest_dump_page(text,fd,page,pages,count);
+}
+
+static void dump_guest_crash_state(int signal_number,siginfo_t *info,void *uap) {
+    if(!guest_crash_dump_enabled) return;
+    guest_crash_dump_enabled=false;
+    unlink(guest_crash_dump_flag);
+    ucontext_t *context=uap;
+    arm_thread_state64_t state=context->uc_mcontext->__ss;
+    uintptr_t pc=(uintptr_t)arm_thread_state64_get_pc(state),lr=(uintptr_t)arm_thread_state64_get_lr(state);
+    uintptr_t sp=(uintptr_t)arm_thread_state64_get_sp(state),fp=(uintptr_t)arm_thread_state64_get_fp(state);
+    FILE *text=fopen(guest_crash_dump_state,"w");
+    int fd=open(guest_crash_dump_memory,O_WRONLY|O_CREAT|O_TRUNC,0600);
+    if(!text) return;
+    fprintf(text,"signal=%d fault=%p pc=%#llx base=%#llx slide=%#llx lr=%#llx sp=%#llx fp=%#llx\n",
+        signal_number,info?info->si_addr:NULL,(unsigned long long)pc,(unsigned long long)guest.base,
+        (unsigned long long)guest.slide,(unsigned long long)lr,(unsigned long long)sp,(unsigned long long)fp);
+    for(unsigned i=0;i<29;i++) fprintf(text,"x%u=%#llx\n",i,(unsigned long long)state.__x[i]);
+    fprintf(text,"register_dump_end\n");
+    if(fd>=0) {
+        uintptr_t pages[64]={0}; int count=0;
+        guest_dump_region(text,fd,pc,0x1000,pages,&count);
+        guest_dump_region(text,fd,lr,0x1000,pages,&count);
+        guest_dump_region(text,fd,sp,0x8000,pages,&count);
+        guest_dump_region(text,fd,fp,0x8000,pages,&count);
+        for(unsigned i=0;i<29;i++) guest_dump_region(text,fd,(uintptr_t)state.__x[i],0x1000,pages,&count);
+        if(info) guest_dump_region(text,fd,(uintptr_t)info->si_addr,0x1000,pages,&count);
+        close(fd);
+    }
+    fclose(text);
+    LOG("[native] guest crash state written to %s\n",guest_crash_dump_state);
+}
+
 static void log_once(const char *format, ...) __attribute__((format(printf,1,2)));
 static unsigned trace_tid(void);
 __attribute__((noinline,used,visibility("default")))
@@ -1463,6 +1525,7 @@ static ssize_t guest_recvfrom(int fd, void *bytes, size_t length, int flags, str
 // A crash on the guest's own pages reports no registers; when tracing, log
 // them before the system takes its report.
 static void guest_crash_registers(int signal_number, siginfo_t *info, void *uap) {
+    dump_guest_crash_state(signal_number,info,uap);
     ucontext_t *context=uap;
     arm_thread_state64_t state=context->uc_mcontext->__ss;
     LOG("[native] guest fault signal=%d pc=%016llx address=%p\n",signal_number,
@@ -1916,7 +1979,8 @@ bool ng_initialize(const char *path, const char *frameworks, const char *library
     }
     trace_guest=[NSProcessInfo.processInfo.arguments containsObject:@"--trace-guest"];
     if (trace_guest) LOG("[native] tracing failed file access, created directories, getenv, sockets and the calls dlsym hands out (--trace-guest)\n");
-    if (trace_guest) {
+    prepare_guest_crash_dump();
+    if (trace_guest || guest_crash_dump_enabled) {
         struct sigaction crash_registers={0};
         crash_registers.sa_sigaction=guest_crash_registers;
         crash_registers.sa_flags=SA_SIGINFO|SA_RESETHAND;
