@@ -18,6 +18,8 @@
 	<string>Allow the app you run in Tolkara to use the microphone, for example for in-game voice chat.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Allow the app you run in Tolkara to reach game servers on your local network.</string>
+	<key>LSSupportsGameMode</key>
+	<true/>
 	<key>GCSupportsControllerUserInteraction</key>
 	<true/>
 	<key>GCSupportedGameControllers</key>
