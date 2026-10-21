@@ -1,6 +1,7 @@
 #import "AddOnsManager.h"
 #import "AddOnsTOC.h"
 #import "AddOnsZip.h"
+#import "../Manifest.h"
 #import <sys/file.h>
 #import <sys/stat.h>
 #import <fcntl.h>
@@ -64,22 +65,32 @@ static NSString *TKAddOnsStamp(void) {
         @"_classic_": @"Classic",
         @"_classic_era_": @"Classic Era",
         @"_classic_beta_": @"Forever Beta",
+        @"_forever_": @"Forever",
+    };
+    NSDictionary<NSString *, NSString *> *productIDs = @{
+        @"_retail_": @"wow",
+        @"_classic_": @"wow_classic",
+        @"_classic_era_": @"wow_classic_era",
+        @"_classic_beta_": @"wow_classic_beta",
+        @"_forever_": @"wowf",
     };
     NSString *folder = self.gameDirectory.lastPathComponent;
     _productName = productNames[folder] ?: folder;
     if ([folder isEqualToString:@"_retail_"]) _wagoFlavor = @"retail";
     else if ([folder isEqualToString:@"_classic_era_"]) _wagoFlavor = @"classic";
-    else if ([folder isEqualToString:@"_classic_beta_"]) _wagoFlavor = @"forever";
+    else if ([folder isEqualToString:@"_classic_beta_"] || [folder isEqualToString:@"_forever_"]) _wagoFlavor = @"forever";
+    NSString *wantedProduct = productIDs[folder];
     NSArray<NSString *> *paths = @[
         [self.gameDirectory.stringByDeletingLastPathComponent stringByAppendingPathComponent:@".build.info"],
         [self.gameDirectory stringByAppendingPathComponent:@".build.info"]
     ];
     for (NSString *path in paths) {
-        NSString *text = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:NULL];
-        if (!text) continue;
-        for (NSString *line in [text componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) {
-            if (![line hasPrefix:@"Version!STRING:"]) continue;
-            NSString *version = [[line substringFromIndex:15] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        NSData *data = [NSData dataWithContentsOfFile:path];
+        NSArray *rows = data ? TKWoWTable(data, NULL) : nil;
+        for (NSDictionary *row in rows) {
+            if (wantedProduct.length && ![row[@"Product"] isEqual:wantedProduct]) continue;
+            if (![row[@"Active"] isEqual:@"1"] || ![row[@"Version"] length]) continue;
+            NSString *version = row[@"Version"];
             NSArray<NSString *> *parts = [version componentsSeparatedByString:@"."];
             if (parts.count < 3) continue;
             NSInteger major = parts[0].integerValue;

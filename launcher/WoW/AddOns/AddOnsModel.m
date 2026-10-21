@@ -47,6 +47,9 @@ TKAddOnSourceKind TKAddOnSourceFromKey(NSString *key) {
 }
 @end
 
+@implementation TKAddOnComponent
+@end
+
 @implementation TKInstalledAddOn
 - (instancetype)init {
     if ((self = [super init])) { _folders = @[]; _compatible = YES; }

@@ -27,6 +27,13 @@ typedef void (^TKAddOnSearchCompletion)(NSArray<TKAddOnSearchResult *> *results,
 - (void)latestForInstalled:(TKInstalledAddOn *)installed completion:(void (^)(TKAddOnSearchResult * _Nullable result, NSError * _Nullable error))completion;
 // A direct GitHub repository row for the curated list, without a search.
 - (TKAddOnSearchResult *)githubRepositoryResult:(NSString *)fullName name:(NSString *)name;
+// Spoken is one core add-on with three modules, plus separate voice packs.
+// These return the components and the English pack selection for the current
+// release. All completions are delivered on the main queue.
+- (void)spokenComponentsWithCompletion:(void (^)(NSArray<TKAddOnComponent *> *components, NSError * _Nullable error))completion;
+- (void)downloadSpokenComponents:(NSArray<TKAddOnComponent *> *)components
+    progress:(void (^ _Nullable)(NSString *message))progress
+    completion:(void (^)(TKAddOnDownload * _Nullable download, NSError * _Nullable error))completion;
 @end
 
 NS_ASSUME_NONNULL_END

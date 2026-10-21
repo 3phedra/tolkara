@@ -7,11 +7,14 @@ static NSError *TKSourcesError(NSString *message) {
     return [NSError errorWithDomain:TKAddOnsSourcesErrorDomain code:1 userInfo:@{NSLocalizedDescriptionKey:message}];
 }
 
+
 static NSString *TKSourcesKeychainService = @"local.tolkara.addons";
 static NSString *TKSourcesKeychainAccount = @"curseforge-api-key";
 
 @interface TKAddOnsSources ()
 @property(nonatomic) NSURLSession *session;
+@property(nonatomic) NSURLSession *downloadSession;
+@property(nonatomic) dispatch_queue_t spokenQueue;
 @property(nonatomic, strong, nullable) NSArray<NSDictionary *> *tukuiItems;
 @property(nonatomic, strong, nullable) NSDate *tukuiDate;
 @end
@@ -30,6 +33,12 @@ static NSString *TKSourcesKeychainAccount = @"curseforge-api-key";
         configuration.timeoutIntervalForResource = 3600;
         configuration.HTTPMaximumConnectionsPerHost = 4;
         _session = [NSURLSession sessionWithConfiguration:configuration];
+        NSURLSessionConfiguration *downloadConfiguration = [NSURLSessionConfiguration ephemeralSessionConfiguration];
+        downloadConfiguration.timeoutIntervalForRequest = 180;
+        downloadConfiguration.timeoutIntervalForResource = 1800;
+        downloadConfiguration.HTTPMaximumConnectionsPerHost = 2;
+        _downloadSession = [NSURLSession sessionWithConfiguration:downloadConfiguration];
+        _spokenQueue = dispatch_queue_create("local.tolkara.spoken", DISPATCH_QUEUE_SERIAL);
     }
     return self;
 }
@@ -93,8 +102,18 @@ static NSString *TKSourcesKeychainAccount = @"curseforge-api-key";
 }
 
 - (void)downloadURL:(NSURL *)url completion:(void (^)(NSURL * _Nullable localURL, NSError * _Nullable error))completion {
-    if (!url) { if (completion) completion(nil, TKSourcesError(@"The provider did not return a download link.")); return; }
-    NSURLSessionDownloadTask *task = [self.session downloadTaskWithURL:url completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
+    [self downloadURL:url queue:dispatch_get_main_queue() completion:completion];
+}
+
+- (void)downloadURL:(NSURL *)url queue:(dispatch_queue_t)queue
+    completion:(void (^)(NSURL * _Nullable localURL, NSError * _Nullable error))completion {
+    if (!url) { dispatch_async(queue, ^{ if (completion) completion(nil, TKSourcesError(@"The provider did not return a download link.")); }); return; }
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+    request.timeoutInterval = 180;
+    [request setValue:@"Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1" forHTTPHeaderField:@"User-Agent"];
+    [request setValue:@"https://addons.wago.io/" forHTTPHeaderField:@"Referer"];
+    [request setValue:@"application/zip,application/octet-stream,*/*" forHTTPHeaderField:@"Accept"];
+    NSURLSessionDownloadTask *task = [self.downloadSession downloadTaskWithRequest:request completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
         if (error || !location) { if (completion) completion(nil, error ?: TKSourcesError(@"The download failed.")); return; }
         NSInteger status = [(NSHTTPURLResponse *)response statusCode];
         if (status < 200 || status >= 300) { if (completion) completion(nil, TKSourcesError([NSString stringWithFormat:@"The download returned HTTP %ld.", (long)status])); return; }
@@ -107,7 +126,7 @@ static NSString *TKSourcesKeychainAccount = @"curseforge-api-key";
         if (![NSFileManager.defaultManager moveItemAtURL:location toURL:[NSURL fileURLWithPath:destination] error:&move]) {
             if (completion) completion(nil, move ?: TKSourcesError(@"Could not keep the download.")); return;
         }
-        dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion([NSURL fileURLWithPath:destination], nil); });
+        dispatch_async(queue, ^{ if (completion) completion([NSURL fileURLWithPath:destination], nil); });
     }];
     [task resume];
 }
@@ -239,18 +258,29 @@ static NSString *TKSourcesKeychainAccount = @"curseforge-api-key";
     return [self bestGitHubReleaseInReleases:releases repository:repository component:nil];
 }
 
-- (void)fetchGitHubReleases:(NSString *)repository component:(NSString *)component completion:(void (^)(NSDictionary * _Nullable assetInfo, NSError * _Nullable error))completion {
+- (void)fetchGitHubReleases:(NSString *)repository component:(NSString *)component page:(NSInteger)page
+    completion:(void (^)(NSDictionary * _Nullable assetInfo, NSError * _Nullable error))completion {
     NSString *encoded = [repository stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLPathAllowedCharacterSet];
-    NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"https://api.github.com/repos/%@/releases?per_page=100", encoded]];
+    NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"https://api.github.com/repos/%@/releases?per_page=100&page=%ld", encoded, (long)page]];
     [self getJSON:url headers:@{@"X-GitHub-Api-Version": @"2022-11-28"} completion:^(id json, NSError *error) {
         if (![json isKindOfClass:NSArray.class]) { if (completion) completion(nil, error ?: TKSourcesError(@"GitHub returned an unexpected response.")); return; }
         NSDictionary *info = [self bestGitHubReleaseInReleases:json repository:repository component:component];
         if (info) { if (completion) completion(info, nil); return; }
+        // Release lists are chronological. Spoken's English Places pack is an
+        // older tag, so component lookups may need a second page.
+        if ([json count] == 100 && page < 5) {
+            [self fetchGitHubReleases:repository component:component page:page + 1 completion:completion];
+            return;
+        }
         NSString *message = component.length
             ? [NSString stringWithFormat:@"This repository has no ZIP release for the \"%@\" component.", component]
             : @"This repository has no packaged ZIP release. Download it from its page and import the ZIP.";
         if (completion) completion(nil, TKSourcesError(message));
     }];
+}
+
+- (void)fetchGitHubReleases:(NSString *)repository component:(NSString *)component completion:(void (^)(NSDictionary * _Nullable assetInfo, NSError * _Nullable error))completion {
+    [self fetchGitHubReleases:repository component:component page:1 completion:completion];
 }
 
 - (void)fetchGitHubReleases:(NSString *)repository completion:(void (^)(NSDictionary * _Nullable assetInfo, NSError * _Nullable error))completion {
@@ -268,6 +298,139 @@ static NSString *TKSourcesKeychainAccount = @"curseforge-api-key";
     result.compatibilityNote = @"The package TOC is checked against this game version after download.";
     return result;
 }
+
+#pragma mark - Spoken multi-part package
+
+- (void)spokenComponentsWithCompletion:(void (^)(NSArray<TKAddOnComponent *> *, NSError *))completion {
+    NSArray<NSDictionary *> *definitions = @[
+        @{@"component": @"spoken", @"name": @"Spoken",
+          @"detail": @"Core add-on · includes Quests, Places and Readables", @"required": @YES},
+        @{@"component": @"quests-audio", @"name": @"Quests voice pack",
+          @"detail": @"English · all quest dialogue", @"required": @NO},
+        @{@"component": @"zones-audio", @"name": @"Places voice pack",
+          @"detail": @"English · zone and subarea lore", @"required": @NO},
+        @{@"component": @"books-audio", @"name": @"Readables voice pack",
+          @"detail": @"English · books, letters and notes", @"required": @NO},
+    ];
+    NSMutableArray *slots = [NSMutableArray arrayWithCapacity:definitions.count];
+    for (NSUInteger i = 0; i < definitions.count; i++) [slots addObject:NSNull.null];
+    __block NSError *coreError = nil;
+    dispatch_group_t group = dispatch_group_create();
+    for (NSUInteger index = 0; index < definitions.count; index++) {
+        NSDictionary *definition = definitions[index];
+        dispatch_group_enter(group);
+        [self fetchGitHubReleases:@"rusty-key/spoken-wow" component:definition[@"component"]
+            completion:^(NSDictionary *info, NSError *error) {
+            TKAddOnComponent *component = [TKAddOnComponent new];
+            component.componentID = definition[@"component"];
+            component.name = definition[@"name"];
+            component.detail = definition[@"detail"];
+            component.repository = @"rusty-key/spoken-wow";
+            component.required = [definition[@"required"] boolValue];
+            component.selected = YES;
+            NSDictionary *release = info[@"release"];
+            NSDictionary *asset = info[@"asset"];
+            if (release && asset) {
+                NSString *tag = [release[@"tag_name"] isKindOfClass:NSString.class] ? release[@"tag_name"] : @"";
+                NSString *version = [tag componentsSeparatedByString:@"/"].lastObject ?: tag;
+                if ([version hasPrefix:@"v"]) version = [version substringFromIndex:1];
+                component.version = version;
+                component.assetName = asset[@"name"];
+                component.assetURL = asset[@"browser_download_url"];
+                component.pageURL = release[@"html_url"];
+                component.size = [asset[@"size"] unsignedLongLongValue];
+            } else {
+                component.detail = [component.detail stringByAppendingString:@" · unavailable"];
+                component.selected = NO;
+                if (component.required && !coreError) coreError = error ?: TKSourcesError(@"Spoken has no downloadable core release.");
+            }
+            @synchronized (slots) { slots[index] = component; }
+            dispatch_group_leave(group);
+        }];
+    }
+    dispatch_group_notify(group, dispatch_get_main_queue(), ^{
+        NSMutableArray<TKAddOnComponent *> *components = [NSMutableArray new];
+        for (id slot in slots) if ([slot isKindOfClass:TKAddOnComponent.class]) [components addObject:slot];
+        if (completion) completion(components, coreError);
+    });
+}
+
+- (void)downloadSpokenComponents:(NSArray<TKAddOnComponent *> *)components
+    progress:(void (^)(NSString *))progress
+    completion:(void (^)(TKAddOnDownload *, NSError *))completion {
+    TKAddOnComponent *core = nil;
+    NSMutableArray<TKAddOnComponent *> *ordered = [NSMutableArray new];
+    for (TKAddOnComponent *component in components) {
+        if (!component.selected || !component.assetURL.length) continue;
+        if ([component.componentID isEqualToString:@"spoken"]) core = component;
+        else [ordered addObject:component];
+    }
+    if (!core) { dispatch_async(self.spokenQueue, ^{ if (completion) completion(nil, TKSourcesError(@"Install Spoken itself before its voice packs.")); }); return; }
+    [ordered insertObject:core atIndex:0];
+    NSMutableArray<TKAddOnDownload *> *downloads = [NSMutableArray new];
+    dispatch_async(self.spokenQueue, ^{
+        NSString *directory = [NSTemporaryDirectory() stringByAppendingPathComponent:@"WolkaraAddOns"];
+        [NSFileManager.defaultManager createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:nil error:NULL];
+        __block NSUInteger index = 0;
+        __block void (^next)(void) = nil;
+        next = ^{
+            if (index >= ordered.count) {
+                TKAddOnDownload *root = nil;
+                NSMutableArray<TKAddOnDownload *> *dependencies = [NSMutableArray new];
+                for (TKAddOnDownload *download in downloads) {
+                    if ([download.identifier hasSuffix:@"#spoken"]) root = download;
+                    else [dependencies addObject:download];
+                }
+                root.dependencies = dependencies.copy;
+                if (completion) completion(root, nil);
+                next = nil;
+                return;
+            }
+            TKAddOnComponent *component = ordered[index];
+            // A previous attempt may have finished before the app was
+            // interrupted. Reuse a complete archive with the exact asset size
+            // instead of downloading the same multi-hundred-MB pack again.
+            NSURL *cached = nil;
+            NSArray *entries = [NSFileManager.defaultManager contentsOfDirectoryAtPath:directory error:NULL];
+            for (NSString *name in entries) {
+                if (![name.pathExtension.lowercaseString isEqualToString:@"zip"]) continue;
+                NSString *path = [directory stringByAppendingPathComponent:name];
+                NSDictionary *attributes = [NSFileManager.defaultManager attributesOfItemAtPath:path error:NULL];
+                if ([attributes[NSFileSize] unsignedLongLongValue] == component.size) { cached = [NSURL fileURLWithPath:path]; break; }
+            }
+            if (cached) {
+                TKAddOnDownload *download = [TKAddOnDownload new];
+                download.archiveURL = cached;
+                download.name = component.name;
+                download.version = component.version ?: @"";
+                download.identifier = [NSString stringWithFormat:@"%@#%@", component.repository, component.componentID];
+                download.pageURL = component.pageURL;
+                download.source = TKAddOnSourceGitHub;
+                [downloads addObject:download];
+                index++;
+                next();
+                return;
+            }
+            NSString *size = [NSByteCountFormatter stringFromByteCount:(long long)component.size countStyle:NSByteCountFormatterCountStyleFile];
+            if (progress) dispatch_async(dispatch_get_main_queue(), ^{ progress([NSString stringWithFormat:@"Downloading %@ (%@)…", component.name, size]); });
+            [self downloadURL:[NSURL URLWithString:component.assetURL] queue:self.spokenQueue completion:^(NSURL *local, NSError *error) {
+                if (!local) { if (completion) completion(nil, error); next = nil; return; }
+                TKAddOnDownload *download = [TKAddOnDownload new];
+                download.archiveURL = local;
+                download.name = component.name;
+                download.version = component.version ?: @"";
+                download.identifier = [NSString stringWithFormat:@"%@#%@", component.repository, component.componentID];
+                download.pageURL = component.pageURL;
+                download.source = TKAddOnSourceGitHub;
+                [downloads addObject:download];
+                index++;
+                next();
+            }];
+        };
+        next();
+    });
+}
+
 
 - (void)searchGitHub:(NSString *)term results:(NSMutableArray<TKAddOnSearchResult *> *)results messages:(NSMutableArray<NSString *> *)messages done:(void (^)(void))done {
     if (term.length < 2) { if (done) done(); return; }
@@ -658,12 +821,26 @@ static NSString *TKWagoUnescape(NSString *value) {
         return;
     }
     if (result.source == TKAddOnSourceWago) {
-        [self downloadURL:result.directURL completion:^(NSURL *local, NSError *error) {
-            if (!local) { if (completion) completion(nil, error); return; }
-            TKAddOnDownload *download = [TKAddOnDownload new];
-            download.archiveURL = local; download.name = result.name; download.version = result.version;
-            download.identifier = result.identifier; download.source = TKAddOnSourceWago; download.pageURL = result.pageURL;
-            if (completion) completion(download, nil);
+        // Wago download links are signed and expire. Re-read the page at
+        // install time so a result left open for a while still gets a fresh
+        // link, and so the current flavor is checked again.
+        __weak TKAddOnsSources *weakSelf = self;
+        [self fetchWagoResultForSlug:result.identifier completion:^(TKAddOnSearchResult *fresh, NSError *pageError) {
+            (void)pageError;
+            TKAddOnsSources *strongSelf = weakSelf;
+            if (!strongSelf) return;
+            if (fresh && !fresh.compatible) {
+                if (completion) completion(nil, TKSourcesError(fresh.compatibilityNote ?: @"Wago has no release for this game version."));
+                return;
+            }
+            TKAddOnSearchResult *target = fresh ?: result;
+            [strongSelf downloadURL:target.directURL completion:^(NSURL *local, NSError *error) {
+                if (!local) { if (completion) completion(nil, error); return; }
+                TKAddOnDownload *download = [TKAddOnDownload new];
+                download.archiveURL = local; download.name = target.name; download.version = target.version;
+                download.identifier = target.identifier; download.source = TKAddOnSourceWago; download.pageURL = target.pageURL;
+                if (completion) completion(download, nil);
+            }];
         }];
         return;
     }

@@ -44,6 +44,22 @@ TKAddOnSourceKind TKAddOnSourceFromKey(NSString *key);
 @property(nonatomic, copy) NSArray<TKAddOnDownload *> *dependencies;
 @end
 
+// A selectable component of a multi-part package (for example Spoken's core
+// add-on and its English voice packs). Only the package sheet uses it.
+@interface TKAddOnComponent : NSObject
+@property(nonatomic, copy) NSString *componentID;
+@property(nonatomic, copy) NSString *name;
+@property(nonatomic, copy) NSString *detail;
+@property(nonatomic, copy) NSString *version;
+@property(nonatomic, copy) NSString *repository;
+@property(nonatomic, copy, nullable) NSString *assetName;
+@property(nonatomic, copy, nullable) NSString *assetURL;
+@property(nonatomic, copy, nullable) NSString *pageURL;
+@property(nonatomic) unsigned long long size;
+@property(nonatomic) BOOL required;
+@property(nonatomic) BOOL selected;
+@end
+
 @interface TKInstalledAddOn : NSObject
 @property(nonatomic, copy) NSString *packageID;
 @property(nonatomic, copy) NSString *name;

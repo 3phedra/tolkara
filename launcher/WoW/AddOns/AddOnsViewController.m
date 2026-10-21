@@ -1,4 +1,5 @@
 #import "AddOnsViewController.h"
+#import "SpokenPackagesViewController.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import "../../UI/LauncherTheme.h"
 
@@ -199,6 +200,20 @@ static NSString *const TKCellIdentifier = @"addon.cell";
 
 #pragma mark - Data
 
+- (TKAddOnSearchResult *)spokenPackageResultForQuery:(NSString *)query {
+    if (![query.lowercaseString containsString:@"spoken"]) return nil;
+    TKAddOnSearchResult *result = [TKAddOnSearchResult new];
+    result.source = TKAddOnSourceGitHub;
+    result.identifier = @"rusty-key/spoken-wow#spoken-package";
+    result.name = @"Spoken (English)";
+    result.summary = @"Core add-on plus optional English voice packs. Opens a package chooser.";
+    result.author = @"rusty-key";
+    result.compatible = YES;
+    result.pageURL = @"https://github.com/rusty-key/spoken-wow";
+    result.payload = @{@"spokenPackage": @YES};
+    return result;
+}
+
 - (void)runSearch:(NSString *)query {
     self.query = query ?: @"";
     if (_mode != TKAddOnsModeDiscover) return;
@@ -209,7 +224,15 @@ static NSString *const TKCellIdentifier = @"addon.cell";
         if (generation != self.searchGeneration) return;
         self.busy = NO;
         if (self.mode != TKAddOnsModeDiscover) return;
-        self.searchResults = results;
+        TKAddOnSearchResult *spoken = [self spokenPackageResultForQuery:self.query];
+        NSMutableArray<TKAddOnSearchResult *> *combined = [NSMutableArray array];
+        if (spoken) [combined addObject:spoken];
+        for (TKAddOnSearchResult *result in results) {
+            if (spoken && result.source == TKAddOnSourceGitHub &&
+                [result.identifier isEqualToString:@"rusty-key/spoken-wow"]) continue;
+            [combined addObject:result];
+        }
+        self.searchResults = combined;
         self.messages = messages;
         [self.table reloadData];
         [self updateFooter];
@@ -317,6 +340,7 @@ static NSString *const TKCellIdentifier = @"addon.cell";
 
 - (NSArray<NSDictionary *> *)recommended {
     return @[
+        @{@"name": @"Spoken (English)", @"detail": @"Voice-over · core + English packs", @"spoken": @YES},
         @{@"name": @"RestedXP Guides", @"detail": @"Leveling guide · GitHub", @"repo": @"RestedXP/RXPGuides"},
         @{@"name": @"Bagnon", @"detail": @"Bags and inventory · CurseForge", @"query": @"Bagnon"},
         @{@"name": @"Leatrix Plus", @"detail": @"Quality of life · CurseForge", @"query": @"Leatrix Plus"},
@@ -406,7 +430,7 @@ static NSString *const TKCellIdentifier = @"addon.cell";
                 NSDictionary *item = self.recommended[indexPath.row];
                 cell.textLabel.text = item[@"name"];
                 cell.detailTextLabel.text = item[@"detail"];
-                cell.accessoryType = item[@"repo"] ? UITableViewCellAccessoryDisclosureIndicator : UITableViewCellAccessoryNone;
+                cell.accessoryType = (item[@"repo"] || item[@"spoken"]) ? UITableViewCellAccessoryDisclosureIndicator : UITableViewCellAccessoryNone;
                 return cell;
             }
             section--;
@@ -477,6 +501,7 @@ static NSString *const TKCellIdentifier = @"addon.cell";
         if (!self.query.length) {
             if (section == 0) {
                 NSDictionary *item = self.recommended[indexPath.row];
+                if ([item[@"spoken"] boolValue]) { [self showSpokenPackages]; return; }
                 if (item[@"repo"]) {
                     TKAddOnSearchResult *result = [self.sources githubRepositoryResult:item[@"repo"] name:item[@"name"]];
                     result.summary = item[@"detail"];
@@ -632,6 +657,21 @@ static NSString *const TKCellIdentifier = @"addon.cell";
 #pragma mark - Result detail and installation
 
 - (void)showResult:(TKAddOnSearchResult *)result {
+    if ([result.payload[@"spokenPackage"] boolValue]) {
+        UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Spoken (English)"
+            message:@"Spoken is one core add-on with Quests, Places and Readables. The English voice packs are separate and large; choose what to install."
+            preferredStyle:UIAlertControllerStyleAlert];
+        __weak TKAddOnsViewController *weakSelf = self;
+        [sheet addAction:[UIAlertAction actionWithTitle:@"Choose packs" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            (void)action; [weakSelf showSpokenPackages];
+        }]];
+        if (result.pageURL.length) [sheet addAction:[UIAlertAction actionWithTitle:@"Open source page" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            (void)action; [weakSelf openURL:result.pageURL];
+        }]];
+        [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+        [self presentViewController:sheet animated:YES completion:nil];
+        return;
+    }
     NSMutableArray<NSString *> *lines = [NSMutableArray array];
     if (result.summary.length) [lines addObject:result.summary];
     NSMutableArray *bits = [NSMutableArray arrayWithObject:TKAddOnSourceName(result.source)];
@@ -653,13 +693,65 @@ static NSString *const TKCellIdentifier = @"addon.cell";
     [self presentViewController:sheet animated:YES completion:nil];
 }
 
+- (void)showSpokenPackages {
+    TKSpokenPackagesViewController *controller = [[TKSpokenPackagesViewController alloc] initWithSources:self.sources];
+    __weak TKAddOnsViewController *weakSelf = self;
+    controller.onInstall = ^(NSArray<TKAddOnComponent *> *components) {
+        [weakSelf installSpokenComponents:components];
+    };
+    [self.navigationController pushViewController:controller animated:YES];
+}
+
+- (void)installSpokenComponents:(NSArray<TKAddOnComponent *> *)components {
+    if (self.busy || !components.count) return;
+    [self beginProgress:@"Installing Spoken" message:@"Preparing packages…"];
+    __weak TKAddOnsViewController *weakSelf = self;
+    [self.sources downloadSpokenComponents:components progress:^(NSString *message) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            TKAddOnsViewController *strongSelf = weakSelf;
+            if (strongSelf.progressAlert) strongSelf.progressAlert.message = message;
+        });
+    } completion:^(TKAddOnDownload *download, NSError *error) {
+        // The Spoken download chain runs on its own queue. Start unpacking
+        // immediately on a background queue; a busy main runloop must not
+        // stall a multi-gigabyte install again.
+        if (!download) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                TKAddOnsViewController *strongSelf = weakSelf;
+                [strongSelf endProgressWithError:error message:nil];
+            });
+            return;
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            TKAddOnsViewController *strongSelf = weakSelf;
+            if (strongSelf.progressAlert) strongSelf.progressAlert.message = @"Installing Spoken and the selected voice packs…";
+        });
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            TKAddOnsViewController *strongSelf = weakSelf;
+            if (!strongSelf) return;
+            NSError *installError = nil;
+            [strongSelf installTree:download error:&installError progress:^(NSString *message) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (strongSelf.progressAlert) strongSelf.progressAlert.message = message;
+                });
+            }];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (installError) [strongSelf endProgressWithError:installError message:nil];
+                else [strongSelf endProgressWithError:nil message:@"Spoken and the selected voice packs are installed. Enable the two Spoken workarounds if the settings or sound look wrong on Forever."];
+                [strongSelf loadInstalled];
+            });
+        });
+    }];
+}
+
 - (void)installResult:(TKAddOnSearchResult *)result {
+    if ([result.payload[@"spokenPackage"] boolValue]) { [self showSpokenPackages]; return; }
     if (self.busy) return;
     if (!result.compatible) {
         [self alertTitle:@"Not for this game version" message:result.compatibilityNote ?: [NSString stringWithFormat:@"This package is not listed for game %@.", self.manager.gameVersion ?: @"version"]];
         return;
     }
-    [self beginProgress:[NSString stringWithFormat:@"Installing %@", result.name] message:@"Resolving download…"];
+    [self beginProgress:[NSString stringWithFormat:@"Installing %@", result.name] message:@"Downloading package… Large add-ons can take a minute."];
     __weak TKAddOnsViewController *weakSelf = self;
     [self.sources resolveResult:result completion:^(TKAddOnDownload *download, NSError *error) {
         dispatch_async(dispatch_get_main_queue(), ^{
