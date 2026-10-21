@@ -3,6 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 SIM=${SIMULATOR:-iPhone 17 Pro}
+SIM_ARCH=${SIM_ARCH:-$(uname -m)}
 SIM_ID=$(xcrun simctl list devices available -j | python3 -c '
 import json, sys
 devices = [d for group in json.load(sys.stdin)["devices"].values() for d in group if sys.argv[1] in (d["name"], d["udid"])]
@@ -12,9 +13,12 @@ print(devices[0]["udid"] if devices else "")' "$SIM")
 xcrun simctl bootstatus "$SIM_ID" -b > /dev/null
 APP=build/wow-launcher/WoWFixture.app
 mkdir -p "$APP"
-xcrun --sdk iphonesimulator clang -target arm64-apple-ios17.0-simulator -fobjc-arc -O1 -g \
+xcrun --sdk iphonesimulator clang -target ${SIM_ARCH}-apple-ios17.0-simulator -fobjc-arc -O1 -g \
     -Wall -Wextra -Werror -Wno-deprecated-declarations \
-    launcher/WoW/*.m launcher/App/LaunchProgressView.m tests/test_wow_launcher_app.m -framework Foundation -framework UIKit -framework QuartzCore -framework CoreGraphics -lz \
+    launcher/WoW/*.m launcher/WoW/AddOns/*.m launcher/App/LaunchProgressView.m \
+    launcher/App/AboutViewController.m launcher/App/CustomServerConfig.m \
+    launcher/UI/LauncherTheme.m tests/test_wow_launcher_app.m \
+    -framework Foundation -framework UIKit -framework QuartzCore -framework CoreGraphics -framework Security -framework UniformTypeIdentifiers -lz \
     -o "$APP/WoWFixture"
 cat > "$APP/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -34,6 +38,7 @@ cat > "$APP/Info.plist" <<'PLIST'
 </dict></plist>
 PLIST
 cp LICENSE NOTICE.md "$APP/"
+cp launcher/Resources/HeroForever.png "$APP/" 2>/dev/null || true
 codesign --force --sign - "$APP" > /dev/null
 xcrun simctl install "$SIM_ID" "$APP"
 LOG=$(mktemp)

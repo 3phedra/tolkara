@@ -1,5 +1,6 @@
 #import "LibraryViewController.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#import "../UI/LauncherTheme.h"
 
 @interface TKLibraryViewController () <UIDocumentPickerDelegate>
 @end
@@ -30,7 +31,16 @@ static BOOL TKTouchControlsShown(void) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.navigationController.navigationBar.prefersLargeTitles=YES;
+    self.navigationController.navigationBar.prefersLargeTitles=NO;
+    self.navigationItem.largeTitleDisplayMode=UINavigationItemLargeTitleDisplayModeNever;
+    self.title=@"";
+    self.tableView.backgroundColor=UIColor.clearColor;
+    self.tableView.backgroundView=[TKPageBackgroundView new];
+    self.tableView.separatorColor=TKLauncherTheme.hairline;
+    TKPageHeaderView *page=[[TKPageHeaderView alloc] initWithTitle:@"Library"
+        subtitle:@"Imported apps and local runs, started with one tap."];
+    page.frame=CGRectMake(0,0,self.tableView.bounds.size.width,96);
+    self.tableView.tableHeaderView=page;
     [self.tableView registerClass:UITableViewCell.class forCellReuseIdentifier:@"app"];
     [self.tableView registerClass:UITableViewCell.class forCellReuseIdentifier:@"notice"];
     _addItem=[[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemAdd target:self action:@selector(importApp)];
@@ -52,6 +62,15 @@ static BOOL TKTouchControlsShown(void) {
     [self refresh];
 }
 
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    UINavigationBarAppearance *appearance=[UINavigationBarAppearance new];
+    [appearance configureWithTransparentBackground];
+    appearance.shadowColor=UIColor.clearColor;
+    self.navigationController.navigationBar.standardAppearance=appearance;
+    self.navigationController.navigationBar.scrollEdgeAppearance=appearance;
+    self.navigationController.navigationBar.compactAppearance=appearance;
+}
 - (void)refresh {
     dispatch_async(_queue,^{
         [self->_library discover];
@@ -100,6 +119,14 @@ static BOOL TKTouchControlsShown(void) {
     if ([self isNoticeSection:indexPath.section] || indexPath.row>=(NSInteger)_apps.count) return nil;
     return _apps[(NSUInteger)indexPath.row];
 }
+- (void)tableView:(UITableView *)tableView willDisplayHeaderView:(UIView *)view forSection:(NSInteger)section {
+    (void)tableView; (void)section;
+    if (![view isKindOfClass:UITableViewHeaderFooterView.class]) return;
+    UITableViewHeaderFooterView *header=(UITableViewHeaderFooterView *)view;
+    header.textLabel.font=[UIFont systemFontOfSize:11 weight:UIFontWeightSemibold];
+    header.textLabel.textColor=TKLauncherTheme.muted;
+    header.textLabel.text=header.textLabel.text.uppercaseString;
+}
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
     (void)tableView;
     return (self.hasNotice ? 1 : 0)+(_apps.count ? 1 : 0);
@@ -130,9 +157,11 @@ static BOOL TKTouchControlsShown(void) {
         UITableViewCell *cell=[tableView dequeueReusableCellWithIdentifier:@"notice" forIndexPath:indexPath];
         UIListContentConfiguration *content=UIListContentConfiguration.cellConfiguration;
         content.text=self.effectiveNotice;
-        content.textProperties.color=UIColor.secondaryLabelColor;
+        content.textProperties.color=TKLauncherTheme.muted;
         content.image=[UIImage systemImageNamed:@"info.circle"];
+        content.imageProperties.tintColor=TKLauncherTheme.gold;
         cell.contentConfiguration=content;
+        cell.backgroundColor=[TKLauncherTheme.surface colorWithAlphaComponent:0.86];
         cell.selectionStyle=UITableViewCellSelectionStyleNone;
         return cell;
     }
@@ -141,13 +170,16 @@ static BOOL TKTouchControlsShown(void) {
     UIListContentConfiguration *content=UIListContentConfiguration.subtitleCellConfiguration;
     content.text=app.name;
     content.textProperties.font=[UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
+    content.textProperties.color=TKLauncherTheme.text;
     content.secondaryText=[NSString stringWithFormat:@"%@ · %@",[self locationOfApp:app],[self lastStartedOfApp:app]];
-    content.secondaryTextProperties.color=UIColor.secondaryLabelColor;
+    content.secondaryTextProperties.color=TKLauncherTheme.muted;
     content.image=[UIImage systemImageNamed:app.source==TKAppSourceCopy ? @"doc.badge.gearshape" : @"gamecontroller.fill"];
+    content.imageProperties.tintColor=TKLauncherTheme.gold;
     content.imageProperties.preferredSymbolConfiguration=[UIImageSymbolConfiguration configurationWithTextStyle:UIFontTextStyleTitle2];
     content.imageToTextPadding=16;
     content.directionalLayoutMargins=NSDirectionalEdgeInsetsMake(12,0,12,0);
     cell.contentConfiguration=content;
+    cell.backgroundColor=[TKLauncherTheme.surface colorWithAlphaComponent:0.86];
     cell.accessoryType=UITableViewCellAccessoryDetailButton;
     return cell;
 }

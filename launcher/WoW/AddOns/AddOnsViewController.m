@@ -1,5 +1,6 @@
 #import "AddOnsViewController.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#import "../../UI/LauncherTheme.h"
 
 typedef NS_ENUM(NSInteger, TKAddOnsMode) { TKAddOnsModeDiscover, TKAddOnsModeInstalled, TKAddOnsModeWorkarounds, TKAddOnsModeBackups };
 
@@ -33,35 +34,54 @@ static NSString *const TKCellIdentifier = @"addon.cell";
     if ((self = [super initWithNibName:nil bundle:nil])) {
         _manager = manager; _sources = sources;
         _query = @""; _searchResults = @[]; _messages = @[]; _installed = @[]; _backups = @[]; _workarounds = @[];
+        _showsCloseButton = YES;
     }
     return self;
 }
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"Add-ons";
+    self.title = @"";
     self.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
-    self.view.backgroundColor = [UIColor colorWithRed:0.025 green:0.045 blue:0.075 alpha:1];
-    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemClose target:self action:@selector(close)];
+    self.view.backgroundColor = TKLauncherTheme.background;
+    if (self.showsCloseButton)
+        self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemClose target:self action:@selector(close)];
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"ellipsis.circle"] menu:[self actionMenu]];
 
     _modes = [[UISegmentedControl alloc] initWithItems:@[@"Discover", @"Installed", @"Workarounds", @"Backups"]];
     _modes.selectedSegmentIndex = 0;
+    _modes.selectedSegmentTintColor = TKLauncherTheme.gold;
     _modes.translatesAutoresizingMaskIntoConstraints = NO;
+    [_modes setTitleTextAttributes:@{NSForegroundColorAttributeName:TKLauncherTheme.text,
+        NSFontAttributeName:[UIFont systemFontOfSize:11 weight:UIFontWeightMedium]} forState:UIControlStateNormal];
+    [_modes setTitleTextAttributes:@{NSForegroundColorAttributeName:[UIColor colorWithRed:0.08 green:0.065 blue:0.035 alpha:1],
+        NSFontAttributeName:[UIFont systemFontOfSize:11 weight:UIFontWeightSemibold]} forState:UIControlStateSelected];
     [_modes addTarget:self action:@selector(modeChanged) forControlEvents:UIControlEventValueChanged];
+    TKPageHeaderView *page = [[TKPageHeaderView alloc] initWithTitle:@"Add-ons"
+        subtitle:@"Discover, install and back up add-ons for this edition."];
+    page.translatesAutoresizingMaskIntoConstraints = NO;
     UIView *header = [UIView new];
-    header.frame = CGRectMake(0, 0, self.view.bounds.size.width, 56);
+    header.frame = CGRectMake(0, 0, self.view.bounds.size.width, 144);
+    [header addSubview:page];
     [header addSubview:_modes];
     [NSLayoutConstraint activateConstraints:@[
+        [page.topAnchor constraintEqualToAnchor:header.topAnchor],
+        [page.leadingAnchor constraintEqualToAnchor:header.leadingAnchor],
+        [page.trailingAnchor constraintEqualToAnchor:header.trailingAnchor],
+        [page.heightAnchor constraintEqualToConstant:96],
+        [_modes.topAnchor constraintEqualToAnchor:page.bottomAnchor constant:4],
         [_modes.leadingAnchor constraintEqualToAnchor:header.leadingAnchor constant:20],
         [_modes.trailingAnchor constraintEqualToAnchor:header.trailingAnchor constant:-20],
-        [_modes.centerYAnchor constraintEqualToAnchor:header.centerYAnchor]
+        [_modes.heightAnchor constraintEqualToConstant:32],
+        [_modes.bottomAnchor constraintLessThanOrEqualToAnchor:header.bottomAnchor constant:-8]
     ]];
 
     _table = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStyleInsetGrouped];
     _table.translatesAutoresizingMaskIntoConstraints = NO;
     _table.dataSource = self; _table.delegate = self;
-    _table.backgroundColor = self.view.backgroundColor;
+    _table.backgroundColor = UIColor.clearColor;
+    _table.backgroundView = [TKPageBackgroundView new];
+    _table.separatorColor = TKLauncherTheme.hairline;
     _table.tableHeaderView = header;
     _table.rowHeight = UITableViewAutomaticDimension;
     _table.estimatedRowHeight = 64;
@@ -117,11 +137,11 @@ static NSString *const TKCellIdentifier = @"addon.cell";
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     UINavigationBarAppearance *appearance = [UINavigationBarAppearance new];
-    [appearance configureWithOpaqueBackground];
-    appearance.backgroundColor = [UIColor colorWithRed:0.025 green:0.045 blue:0.075 alpha:1];
+    [appearance configureWithTransparentBackground];
+    appearance.shadowColor = UIColor.clearColor;
     self.navigationItem.standardAppearance = appearance;
     self.navigationItem.scrollEdgeAppearance = appearance;
-    self.navigationController.navigationBar.tintColor = [UIColor colorWithRed:0.85 green:0.68 blue:0.30 alpha:1];
+    self.navigationController.navigationBar.tintColor = TKLauncherTheme.gold;
 }
 
 - (void)close { [self dismissViewControllerAnimated:YES completion:nil]; }
@@ -320,6 +340,14 @@ static NSString *const TKCellIdentifier = @"addon.cell";
 
 #pragma mark - Table
 
+- (void)tableView:(UITableView *)tableView willDisplayHeaderView:(UIView *)view forSection:(NSInteger)section {
+    (void)tableView; (void)section;
+    if (![view isKindOfClass:UITableViewHeaderFooterView.class]) return;
+    UITableViewHeaderFooterView *header=(UITableViewHeaderFooterView *)view;
+    header.textLabel.font=[UIFont systemFontOfSize:11 weight:UIFontWeightSemibold];
+    header.textLabel.textColor=TKLauncherTheme.muted;
+    header.textLabel.text=header.textLabel.text.uppercaseString;
+}
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
     if (self.mode == TKAddOnsModeDiscover) return (self.query.length ? 0 : 1) + self.discoverSources.count;
     if (self.mode == TKAddOnsModeInstalled) return 2;
@@ -363,8 +391,14 @@ static NSString *const TKCellIdentifier = @"addon.cell";
     cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     cell.accessoryView = nil;
     cell.detailTextLabel.numberOfLines = 2;
-    cell.textLabel.textColor = UIColor.whiteColor;
-    cell.detailTextLabel.textColor = UIColor.secondaryLabelColor;
+    cell.backgroundColor = [TKLauncherTheme.surface colorWithAlphaComponent:0.86];
+    cell.textLabel.textColor = TKLauncherTheme.text;
+    cell.detailTextLabel.textColor = TKLauncherTheme.muted;
+    NSString *symbol = self.mode == TKAddOnsModeDiscover ? @"arrow.down.circle" :
+        (self.mode == TKAddOnsModeInstalled ? @"checkmark.circle" :
+        (self.mode == TKAddOnsModeWorkarounds ? @"wrench.and.screwdriver" : @"clock.arrow.circlepath"));
+    cell.imageView.image = [UIImage systemImageNamed:symbol withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:17 weight:UIImageSymbolWeightMedium]];
+    cell.imageView.tintColor = TKLauncherTheme.gold;
     if (self.mode == TKAddOnsModeDiscover) {
         NSInteger section = indexPath.section;
         if (!self.query.length) {

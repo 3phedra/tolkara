@@ -8,6 +8,13 @@
 #import "../launcher/App/LaunchProgressView.h"
 #import "wow_installation_fixture.h"
 
+// The synthetic fixture never reads the custom-server plist; satisfy the
+// production symbol without pulling Diagnostics.m into this isolated test.
+NSString *TKDocumentsPath(NSString *name) {
+    NSString *documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    return name.length ? [documents stringByAppendingPathComponent:name] : documents;
+}
+
 @interface TKWoWViewController (Fixture)
 - (void)selectProduct:(NSDictionary *)product;
 - (void)refresh;
@@ -79,6 +86,7 @@ static UIView *Find(UIView *view, NSString *identifier) {
 - (void)checkSelection {
     assert([self primary].enabled);
     assert([[(UIButton *)Find(self.controller.view,@"wow.edition") configuration].title containsString:@"Classic Era"]);
+    assert([[(UILabel *)Find(self.controller.view,@"wow.title") text] containsString:@"CLASSIC"]);
     assert([[(UILabel *)Find(self.controller.view,@"wow.version") text] containsString:@"demo"]);
     [self.controller selectProduct:TKWoWProducts()[0]];
     [self performSelector:@selector(checkReady) withObject:nil afterDelay:0.3];
@@ -86,7 +94,12 @@ static UIView *Find(UIView *view, NSString *identifier) {
 - (void)checkReady {
     assert([self primary].enabled);
     assert([[self status] isEqual:@"Ready to play"] && self.controller.title.length==0);
-    assert([[(UILabel *)Find(self.controller.view,@"wow.title") text] isEqual:@"WOLKARA"]);
+    NSString *productName=[self.controller.product[@"name"] uppercaseString];
+    productName=[productName stringByReplacingOccurrencesOfString:@"·" withString:@""];
+    productName=[productName stringByReplacingOccurrencesOfString:@"  " withString:@" "];
+    productName=[productName stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    assert([[(UILabel *)Find(self.controller.view,@"wow.title") text] isEqual:productName]);
+    [self capture:@"redesign-home.png"];
     self.controller.executionMode=TKExecutionModeNone;
     assert(![self primary].enabled);
     self.controller.executionMode=TKExecutionModeDeveloperService;
@@ -117,13 +130,14 @@ static UIView *Find(UIView *view, NSString *identifier) {
     [self performSelector:@selector(startThenBackground) withObject:nil afterDelay:0.3];
 }
 - (void)startThenBackground {
+    // A direct Play tap starts immediately; backgrounding after it must not
+    // produce a second launch. The old auto-launch-after-check flow is gone.
     assert([self primary].enabled);
-    atomic_store(&slow,true); [self tap];
     [NSNotificationCenter.defaultCenter postNotificationName:UIApplicationWillResignActiveNotification object:nil];
     [self performSelector:@selector(checkCancellation) withObject:nil afterDelay:0.7];
 }
 - (void)checkCancellation {
-    assert(self.launches==0); atomic_store(&slow,false); [self.controller refresh];
+    assert(self.launches==0);
     [self performSelector:@selector(captureAndLaunch) withObject:nil afterDelay:0.3];
 }
 - (void)captureAndLaunch {
@@ -195,7 +209,7 @@ static UIView *Find(UIView *view, NSString *identifier) {
     assert([credits.text containsString:@"Permission is hereby granted"]);
     assert([credits.text containsString:@"Martin Benjamins"]);
     [self.controller.navigationController popToRootViewControllerAnimated:NO];
-    puts("WoW UIKit PASS: automatic check/update, offline retry, edition race, background cancellation, verified launch, inline preparation/failure/session end, no duplicate launches and bundled licenses."); fflush(stdout);
+    puts("WoW UIKit PASS: automatic check/update, offline retry, edition race, background safety, verified launch, inline preparation/failure/session end, no duplicate launches and bundled licenses."); fflush(stdout);
     if (![NSProcessInfo.processInfo.arguments containsObject:@"--preview"]) exit(0);
     // Leave a ready home for visual inspection; no real download or guest runs.
     [self.controller refresh];

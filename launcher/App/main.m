@@ -6,6 +6,7 @@
 #import "ControllerProbe.h"
 #import "Diagnostics.h"
 #import "DiagnosticsViewController.h"
+#import "LauncherTabController.h"
 #import "ExecutionMode.h"
 #import "LibraryViewController.h"
 #import "../WoW/WoWViewController.h"
@@ -36,6 +37,7 @@
 @property(nonatomic, strong) UINavigationController *navigation;
 @property(nonatomic, strong) TKLibraryViewController *libraryController;
 @property(nonatomic, strong) TKWoWViewController *wowController;
+@property(nonatomic, strong) TKLauncherTabController *tabController;
 @property(nonatomic, strong) TKAppLibrary *library;
 @property(nonatomic, strong, nullable) TKApp *launchingApp;
 @property(nonatomic, strong) TKSteamCloudCoordinator *steamCloud;
@@ -212,6 +214,7 @@ static BOOL PreparedFromOutside(void) { return hd_may_run_unsigned_code() || ng_
     // can receive containers (tools/install.sh launches once if needed).
     if (self.executionMode==TKExecutionModeLocalSigning) PrepareLocalSigningFolder();
     self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
+    self.window.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
     [self reserveExecutableMemory];
     self.library = OpenLibrary();
 #if TOLKARA_INTEGRATED_AUTH
@@ -246,8 +249,13 @@ static BOOL PreparedFromOutside(void) { return hd_may_run_unsigned_code() || ng_
             [host libraryViewController:host.libraryController startApp:app];
         };
         self.wowController.showDiagnostics=^{ [weakSelf showDiagnostics]; };
-        self.navigation=[[UINavigationController alloc] initWithRootViewController:self.wowController];
-        self.window.rootViewController=self.navigation;
+        TKLauncherTabController *tabs=[[TKLauncherTabController alloc] initWithWoWController:self.wowController
+            libraryController:self.libraryController];
+        tabs.showDiagnostics=^{ [weakSelf showDiagnostics]; };
+        tabs.showExecutionMode=^{ [weakSelf changeExecutionMode]; };
+        self.tabController=tabs;
+        self.navigation=tabs.playNavigation;
+        self.window.rootViewController=tabs;
         [self.window makeKeyAndVisible];
         // The public home has one startup route and no execution-mode chooser.
         return;
@@ -299,6 +307,8 @@ static BOOL PreparedFromOutside(void) { return hd_may_run_unsigned_code() || ng_
 // this process can no longer start an app.
 - (void)showStatusScreen {
     if (!self.navigation) return;
+    [self.tabController selectPlayTab];
+    [self.navigation popToRootViewControllerAnimated:NO];
     if (self.wowController) {
         [self.wowController beginStartup];
         self.status=self.wowController.startupStatusLabel;
@@ -387,7 +397,7 @@ static BOOL PreparedFromOutside(void) { return hd_may_run_unsigned_code() || ng_
     (void)controller;
     TKReportViewController *report=[[TKReportViewController alloc] initWithTitle:app.name file:nil];
     report.text=@"Checking the loader… No app code is run.";
-    [self.navigation pushViewController:report animated:YES];
+    [controller.navigationController pushViewController:report animated:YES];
     NSError *error=nil;
     NSString *path=[self.library executablePathForApp:app error:&error];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{

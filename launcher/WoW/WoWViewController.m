@@ -4,9 +4,13 @@
 #import "Updater.h"
 #import "../App/LaunchProgressView.h"
 #import "../App/CustomServerConfig.h"
+#import "../App/AboutViewController.h"
+#import "../UI/LauncherTheme.h"
 #import "AddOns/AddOnsManager.h"
 #import "AddOns/AddOnsSources.h"
 #import "AddOns/AddOnsViewController.h"
+
+NSNotificationName const TKWoWStateDidChangeNotification = @"TKWoWStateDidChangeNotification";
 
 static UIColor *Gold(void) { return [UIColor colorWithRed:0.88 green:0.73 blue:0.43 alpha:1]; }
 static UIColor *Muted(void) { return [UIColor colorWithRed:0.66 green:0.72 blue:0.78 alpha:1]; }
@@ -37,11 +41,11 @@ static UIStackView *Stack(NSArray<UIView *> *views, CGFloat spacing) {
     NSString *_updatePhase;
     uint64_t _updateDone, _updateTotal;
     UIProgressView *_progressBar;
-    CAGradientLayer *_background;
-    UIStackView *_columns;
-    NSLayoutConstraint *_leftWidth;
-    UILabel *_stateLabel, *_detailLabel, *_versionLabel, *_startupLabel, *_compatibilityLabel;
-    UIButton *_editionButton, *_preferencesButton, *_primaryButton;
+    UIImageView *_heroImage;
+    UIView *_heroShade;
+    UIView *_actionBar;
+    UILabel *_stateLabel, *_detailLabel, *_versionLabel, *_startupLabel, *_compatibilityLabel, *_heroTitleLabel;
+    UIButton *_editionButton, *_preferencesButton, *_primaryButton, *_customLink, *_touchLink, *_addOnsLink;
     UIBarButtonItem *_refreshItem;
     UIActivityIndicatorView *_activity;
 }
@@ -67,11 +71,6 @@ static UIStackView *Stack(NSArray<UIView *> *views, CGFloat spacing) {
     [super viewDidLoad];
     self.overrideUserInterfaceStyle=UIUserInterfaceStyleDark;
     self.view.backgroundColor=[UIColor colorWithRed:0.025 green:0.045 blue:0.075 alpha:1];
-    _background=[CAGradientLayer layer];
-    _background.colors=@[(id)[UIColor colorWithRed:0.035 green:0.085 blue:0.13 alpha:1].CGColor,
-        (id)[UIColor colorWithRed:0.02 green:0.03 blue:0.055 alpha:1].CGColor];
-    _background.startPoint=CGPointMake(0,0); _background.endPoint=CGPointMake(1,1);
-    [self.view.layer insertSublayer:_background atIndex:0];
     self.navigationItem.rightBarButtonItem=[[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"gearshape"]
         style:UIBarButtonItemStylePlain target:self action:@selector(settings)];
     self.navigationItem.rightBarButtonItem.accessibilityLabel=@"Settings";
@@ -83,30 +82,102 @@ static UIStackView *Stack(NSArray<UIView *> *views, CGFloat spacing) {
     _refreshItem.accessibilityIdentifier=@"wow.refresh";
     self.navigationItem.leftBarButtonItem=_refreshItem;
 
-    UILabel *title=Label(37,UIFontWeightBold,Gold()); title.text=@"WOLKARA";
-    UIFontDescriptor *serif=[[UIFont systemFontOfSize:37 weight:UIFontWeightBold].fontDescriptor fontDescriptorWithDesign:UIFontDescriptorSystemDesignSerif];
-    if (serif) title.font=[[UIFontMetrics metricsForTextStyle:UIFontTextStyleLargeTitle] scaledFontForFont:[UIFont fontWithDescriptor:serif size:37]];
-    title.accessibilityIdentifier=@"wow.title";
-    UILabel *editionLabel=Label(11,UIFontWeightSemibold,Muted()); editionLabel.text=@"GAME EDITION";
+    _heroImage=[[UIImageView alloc] initWithImage:TKLauncherHeroImage()];
+    _heroImage.contentMode=UIViewContentModeScaleAspectFill;
+    _heroImage.clipsToBounds=YES;
+    _heroImage.translatesAutoresizingMaskIntoConstraints=NO;
+    [self.view insertSubview:_heroImage atIndex:0];
+    [NSLayoutConstraint activateConstraints:@[
+        [_heroImage.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [_heroImage.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+        [_heroImage.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [_heroImage.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor]
+    ]];
+    _heroShade=[UIView new];
+    _heroShade.translatesAutoresizingMaskIntoConstraints=NO;
+    _heroShade.userInteractionEnabled=NO;
+    CAGradientLayer *shade=[CAGradientLayer layer];
+    shade.colors=@[(id)[UIColor colorWithWhite:0 alpha:0.30].CGColor,
+        (id)[UIColor colorWithWhite:0 alpha:0.02].CGColor,
+        (id)[UIColor colorWithWhite:0 alpha:0.55].CGColor,
+        (id)[UIColor colorWithWhite:0 alpha:0.82].CGColor];
+    shade.locations=@[@0,@0.28,@0.62,@1];
+    [_heroShade.layer addSublayer:shade];
+    shade.name=@"heroShade";
+    [self.view insertSubview:_heroShade aboveSubview:_heroImage];
+    [NSLayoutConstraint activateConstraints:@[
+        [_heroShade.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [_heroShade.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+        [_heroShade.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [_heroShade.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor]
+    ]];
+
+    UILabel *world=Label(11,UIFontWeightSemibold,Gold());
+    world.text=@"WORLD OF WARCRAFT";
+    world.textAlignment=NSTextAlignmentLeft;
+    world.attributedText=[[NSAttributedString alloc] initWithString:@"WORLD OF WARCRAFT"
+        attributes:@{NSFontAttributeName:[UIFont systemFontOfSize:11 weight:UIFontWeightSemibold],
+            NSForegroundColorAttributeName:Gold(),NSKernAttributeName:@3.2}];
+    _heroTitleLabel=Label(50,UIFontWeightBold,Gold());
+    UIFontDescriptor *serif=[[UIFont systemFontOfSize:50 weight:UIFontWeightBold].fontDescriptor fontDescriptorWithDesign:UIFontDescriptorSystemDesignSerif];
+    if (serif) _heroTitleLabel.font=[UIFont fontWithDescriptor:serif size:50];
+    _heroTitleLabel.textColor=Gold();
+    _heroTitleLabel.textAlignment=NSTextAlignmentLeft;
+    _heroTitleLabel.accessibilityIdentifier=@"wow.title";
+    _heroTitleLabel.layer.shadowColor=[UIColor blackColor].CGColor;
+    _heroTitleLabel.layer.shadowOpacity=0.65;
+    _heroTitleLabel.layer.shadowRadius=24;
+    _heroTitleLabel.layer.shadowOffset=CGSizeMake(0,6);
+    UILabel *tagline=Label(13,UIFontWeightRegular,Muted());
+    tagline.text=@"World of Warcraft, on iPad.";
+    tagline.textAlignment=NSTextAlignmentLeft;
+    UILabel *editionLabel=Label(10,UIFontWeightSemibold,Muted()); editionLabel.text=@"GAME EDITION";
+    editionLabel.textAlignment=NSTextAlignmentLeft;
     _editionButton=[self button:@"wow.edition" action:@selector(chooseEdition)];
     _preferencesButton=[self button:@"wow.preferences" action:@selector(preferences)];
-    UIButton *addOnsButton=[self button:@"wow.addons" action:@selector(addOns)];
-    [addOnsButton setTitle:@"Add-ons" forState:UIControlStateNormal];
-    _compatibilityLabel=Label(12,UIFontWeightRegular,Muted());
-    UIStackView *left=Stack(@[title,editionLabel,_editionButton,_preferencesButton,addOnsButton,_compatibilityLabel],12);
-    [left setCustomSpacing:24 afterView:title];
+    UIStackView *editionRow=Stack(@[_editionButton,_preferencesButton],8);
+    editionRow.axis=UILayoutConstraintAxisHorizontal; editionRow.distribution=UIStackViewDistributionFillEqually;
+    [editionRow.widthAnchor constraintEqualToConstant:460].active=YES;
+    editionLabel.hidden=YES;
+    editionRow.hidden=YES;
+    _compatibilityLabel=Label(11,UIFontWeightRegular,Muted());
+    _compatibilityLabel.textAlignment=NSTextAlignmentLeft;
+
+    _updatesLabel=Label(9,UIFontWeightRegular,Muted()); _updatesLabel.accessibilityIdentifier=@"wow.updates";
+    _updatesLabel.text=@"Updates automatically. Keep this app open while downloading.";
+    _updatesLabel.numberOfLines=1;
+    _startupLabel=Label(9,UIFontWeightRegular,Muted()); _startupLabel.accessibilityIdentifier=@"wow.startup";
+    _startupLabel.numberOfLines=1;
+    UIScrollView *scroll=[UIScrollView new]; scroll.accessibilityIdentifier=@"wow.scroll";
+    scroll.translatesAutoresizingMaskIntoConstraints=NO; [self.view addSubview:scroll];
+    UIStackView *hero=Stack(@[world,_heroTitleLabel,tagline,editionLabel,editionRow,_compatibilityLabel,_updatesLabel,_startupLabel],6);
+    hero.alignment=UIStackViewAlignmentLeading;
+    [hero setCustomSpacing:2 afterView:world];
+    [hero setCustomSpacing:8 afterView:_heroTitleLabel];
+        hero.translatesAutoresizingMaskIntoConstraints=NO;
+    [scroll addSubview:hero];
+    [NSLayoutConstraint activateConstraints:@[
+        [scroll.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
+        [scroll.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor],
+        [scroll.leadingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor],
+        [scroll.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor],
+        [hero.topAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.topAnchor constant:24],
+        [hero.bottomAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.bottomAnchor constant:-24],
+        [hero.leadingAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.leadingAnchor constant:64],
+        [hero.trailingAnchor constraintLessThanOrEqualToAnchor:scroll.frameLayoutGuide.trailingAnchor constant:-32],
+        [hero.widthAnchor constraintLessThanOrEqualToConstant:720]
+    ]];
+    scroll.contentInset=UIEdgeInsetsMake(0,0,150,0);
 
     _activity=[[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
     _activity.color=Gold(); _activity.hidesWhenStopped=YES;
-    _stateLabel=Label(23,UIFontWeightSemibold,UIColor.whiteColor); _stateLabel.accessibilityIdentifier=@"wow.status";
+    _stateLabel=Label(20,UIFontWeightSemibold,UIColor.whiteColor); _stateLabel.accessibilityIdentifier=@"wow.status";
     UIStackView *stateRow=[[UIStackView alloc] initWithArrangedSubviews:@[_activity,_stateLabel]];
-    stateRow.axis=UILayoutConstraintAxisHorizontal; stateRow.spacing=10;
-    // A hidden activity indicator retains its 20pt intrinsic height. Center
-    // it rather than stretching/compressing both views to that same height.
+    stateRow.axis=UILayoutConstraintAxisHorizontal; stateRow.spacing=9;
     stateRow.alignment=UIStackViewAlignmentCenter;
     [_activity setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
-    _detailLabel=Label(15,UIFontWeightRegular,Muted()); _detailLabel.accessibilityIdentifier=@"wow.detail";
-    _versionLabel=Label(12,UIFontWeightRegular,Muted()); _versionLabel.accessibilityIdentifier=@"wow.version";
+    _detailLabel=Label(12,UIFontWeightRegular,Muted()); _detailLabel.accessibilityIdentifier=@"wow.detail";
+    _versionLabel=Label(10,UIFontWeightRegular,Muted()); _versionLabel.accessibilityIdentifier=@"wow.version";
     _progressBar=[[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault];
     _progressBar.progressTintColor=Gold(); _progressBar.accessibilityIdentifier=@"wow.progress";
     _launchProgress=[TKLaunchProgressView new];
@@ -114,34 +185,60 @@ static UIStackView *Stack(NSArray<UIView *> *views, CGFloat spacing) {
     _diagnosticsButton=[self button:@"wow.diagnostics" action:@selector(diagnostics)];
     [_diagnosticsButton setTitle:@"Diagnostics and logs" forState:UIControlStateNormal];
     _diagnosticsButton.tintColor=Gold(); _diagnosticsButton.hidden=YES;
-    UIStackView *status=Stack(@[stateRow,_detailLabel,_progressBar,_launchProgress,_versionLabel,_diagnosticsButton],10);
-    status.layoutMargins=UIEdgeInsetsMake(20,20,20,20); status.layoutMarginsRelativeArrangement=YES;
-    status.backgroundColor=[UIColor colorWithRed:0.07 green:0.105 blue:0.15 alpha:1];
-    status.layer.cornerRadius=16; status.layer.borderWidth=1;
-    status.layer.borderColor=[Gold() colorWithAlphaComponent:0.24].CGColor;
+    _diagnosticsButton.titleLabel.font=[UIFont systemFontOfSize:11 weight:UIFontWeightSemibold];
+
+    _addOnsLink=[self linkButton:@"wow.addons" title:@"Add-ons" symbol:@"puzzlepiece.extension" action:@selector(addOns)];
+    _touchLink=[self linkButton:@"wow.touch" title:@"Touch" symbol:@"hand.tap" action:@selector(touchLinkTapped)];
+    _customLink=[self linkButton:@"wow.custom" title:@"Server" symbol:@"network" action:@selector(customLinkTapped)];
+    UIStackView *links=[[UIStackView alloc] initWithArrangedSubviews:@[_addOnsLink,_touchLink,_customLink]];
+    links.axis=UILayoutConstraintAxisHorizontal; links.spacing=12; links.alignment=UIStackViewAlignmentCenter;
+
     _primaryButton=[self button:@"wow.primary" action:@selector(primaryAction)];
     [_primaryButton.heightAnchor constraintGreaterThanOrEqualToConstant:52].active=YES;
-    _updatesLabel=Label(12,UIFontWeightRegular,Muted()); _updatesLabel.accessibilityIdentifier=@"wow.updates";
-    _updatesLabel.text=@"Updates automatically. Keep this app open while downloading.";
-    _startupLabel=Label(12,UIFontWeightRegular,Muted()); _startupLabel.accessibilityIdentifier=@"wow.startup";
-    UIStackView *right=Stack(@[status,_primaryButton,_updatesLabel,_startupLabel],12);
-    _columns=Stack(@[left,right],32); _columns.accessibilityIdentifier=@"wow.columns";
-    _columns.alignment=UIStackViewAlignmentTop;
-    _leftWidth=[left.widthAnchor constraintEqualToAnchor:_columns.widthAnchor multiplier:0.38];
+    [_primaryButton.widthAnchor constraintEqualToConstant:190].active=YES;
+    UIButton *gear=[self button:@"wow.settings" action:@selector(settings)];
+    [gear setImage:[UIImage systemImageNamed:@"gearshape.fill"] forState:UIControlStateNormal];
+    gear.tintColor=Gold();
+    gear.backgroundColor=[UIColor colorWithWhite:1 alpha:0.08];
+    gear.layer.cornerRadius=12;
+    [gear.widthAnchor constraintEqualToConstant:48].active=YES;
+    [gear.heightAnchor constraintEqualToConstant:52].active=YES;
+    UIStackView *playRow=[[UIStackView alloc] initWithArrangedSubviews:@[_primaryButton,gear]];
+    playRow.axis=UILayoutConstraintAxisHorizontal; playRow.spacing=8; playRow.alignment=UIStackViewAlignmentCenter;
+    UILabel *launchNote=Label(9,UIFontWeightRegular,Muted());
+    launchNote.text=@"Launch locally";
+    launchNote.textAlignment=NSTextAlignmentCenter;
+    UIStackView *right=Stack(@[playRow,launchNote],5);
+    right.alignment=UIStackViewAlignmentCenter;
 
-    UIScrollView *scroll=[UIScrollView new]; scroll.accessibilityIdentifier=@"wow.scroll";
-    scroll.translatesAutoresizingMaskIntoConstraints=NO; [self.view addSubview:scroll];
-    _columns.translatesAutoresizingMaskIntoConstraints=NO; [scroll addSubview:_columns];
+    UIStackView *left=Stack(@[stateRow,_detailLabel,_progressBar,_launchProgress,_versionLabel,_diagnosticsButton,links],5);
+    left.alignment=UIStackViewAlignmentLeading;
+    UIView *flex=[UIView new];
+    [flex setContentHuggingPriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
+    UIStackView *barContent=[[UIStackView alloc] initWithArrangedSubviews:@[left,flex,right]];
+    barContent.axis=UILayoutConstraintAxisHorizontal; barContent.spacing=20; barContent.alignment=UIStackViewAlignmentCenter;
+    barContent.translatesAutoresizingMaskIntoConstraints=NO;
+
+    _actionBar=[UIView new];
+    _actionBar.translatesAutoresizingMaskIntoConstraints=NO;
+    _actionBar.backgroundColor=[UIColor colorWithWhite:0.025 alpha:0.88];
+    _actionBar.layer.cornerRadius=18;
+    _actionBar.layer.borderWidth=1;
+    _actionBar.layer.borderColor=[UIColor colorWithWhite:1 alpha:0.10].CGColor;
+    _actionBar.layer.shadowColor=[UIColor blackColor].CGColor;
+    _actionBar.layer.shadowOpacity=0.55;
+    _actionBar.layer.shadowRadius=24;
+    _actionBar.layer.shadowOffset=CGSizeMake(0,10);
+    [_actionBar addSubview:barContent];
+    [self.view addSubview:_actionBar];
     [NSLayoutConstraint activateConstraints:@[
-        [scroll.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
-        [scroll.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor],
-        [scroll.leadingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor],
-        [scroll.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor],
-        [_columns.topAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.topAnchor constant:16],
-        [_columns.bottomAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.bottomAnchor constant:-20],
-        [_columns.leadingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.leadingAnchor constant:24],
-        [_columns.trailingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.trailingAnchor constant:-24],
-        [_columns.widthAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.widthAnchor constant:-48]
+        [_actionBar.leadingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor constant:16],
+        [_actionBar.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor constant:-16],
+        [_actionBar.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor constant:-12],
+        [barContent.topAnchor constraintEqualToAnchor:_actionBar.topAnchor constant:16],
+        [barContent.bottomAnchor constraintEqualToAnchor:_actionBar.bottomAnchor constant:-14],
+        [barContent.leadingAnchor constraintEqualToAnchor:_actionBar.leadingAnchor constant:18],
+        [barContent.trailingAnchor constraintEqualToAnchor:_actionBar.trailingAnchor constant:-18]
     ]];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(foreground:)
         name:UIApplicationDidBecomeActiveNotification object:nil];
@@ -163,11 +260,8 @@ static UIStackView *Stack(NSArray<UIView *> *views, CGFloat spacing) {
 }
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
-    _background.frame=self.view.bounds;
-    BOOL horizontal=self.view.bounds.size.width>=700 && !UIContentSizeCategoryIsAccessibilityCategory(self.traitCollection.preferredContentSizeCategory);
-    _leftWidth.active=horizontal;
-    _columns.axis=horizontal?UILayoutConstraintAxisHorizontal:UILayoutConstraintAxisVertical;
-    _columns.alignment=horizontal?UIStackViewAlignmentTop:UIStackViewAlignmentFill;
+    for (CALayer *layer in _heroShade.layer.sublayers)
+        if ([layer.name isEqualToString:@"heroShade"]) layer.frame=_heroShade.bounds;
 }
 - (void)viewDidAppear:(BOOL)animated { [super viewDidAppear:animated]; if (!_busy && !_sessionUsed && !_starting) [self inspectLocal]; }
 - (void)viewDidDisappear:(BOOL)animated { [super viewDidDisappear:animated]; if(!_updating)[self cancel]; }
@@ -285,6 +379,28 @@ static UIStackView *Stack(NSArray<UIView *> *views, CGFloat spacing) {
     [NSUserDefaults.standardUserDefaults setBool:YES forKey:[@"WoWRepairRequested." stringByAppendingString:_product[@"id"]]];
     [self checkForUpdatesAndLaunch:NO install:YES];
 }
+- (void)touchLinkTapped { if (self.showTouchControls) self.showTouchControls(); else [self touchControlsSettings]; }
+- (void)customLinkTapped { if (self.showCustomServer) self.showCustomServer(); else [self configureCustomServer]; }
+- (UIButton *)linkButton:(NSString *)identifier title:(NSString *)title symbol:(NSString *)symbol action:(SEL)action {
+    UIButton *button=[self button:identifier action:action];
+    UIButtonConfiguration *configuration=[UIButtonConfiguration plainButtonConfiguration];
+    configuration.title=title;
+    configuration.image=[UIImage systemImageNamed:symbol];
+    configuration.preferredSymbolConfigurationForImage=[UIImageSymbolConfiguration configurationWithPointSize:12 weight:UIImageSymbolWeightMedium];
+    configuration.imagePadding=5;
+    configuration.baseForegroundColor=Muted();
+    configuration.titleLineBreakMode=NSLineBreakByTruncatingTail;
+    configuration.titleTextAttributesTransformer=^NSDictionary<NSAttributedStringKey,id> *(NSDictionary<NSAttributedStringKey,id> *attributes) {
+        NSMutableDictionary<NSAttributedStringKey,id> *result=[attributes mutableCopy];
+        result[NSFontAttributeName]=[UIFont systemFontOfSize:10 weight:UIFontWeightMedium];
+        return result;
+    };
+    configuration.contentInsets=NSDirectionalEdgeInsetsMake(2,0,2,0);
+    button.configuration=configuration;
+    button.titleLabel.font=[UIFont systemFontOfSize:10 weight:UIFontWeightMedium];
+    button.titleLabel.numberOfLines=1;
+    return button;
+}
 - (void)configureButton:(UIButton *)button title:(NSString *)title filled:(BOOL)filled {
     UIButtonConfiguration *configuration=filled?UIButtonConfiguration.filledButtonConfiguration:UIButtonConfiguration.plainButtonConfiguration;
     configuration.title=title; configuration.cornerStyle=UIButtonConfigurationCornerStyleMedium;
@@ -302,10 +418,18 @@ static UIStackView *Stack(NSArray<UIView *> *views, CGFloat spacing) {
     _editionButton.backgroundColor=[UIColor colorWithWhite:1 alpha:0.055]; _editionButton.layer.cornerRadius=10;
     [self configureButton:_preferencesButton title:[NSString stringWithFormat:@"%@  ·  %@  ▾",_region.uppercaseString,[_locale isEqual:@"esES"]?@"Spanish":@"English"] filled:NO];
     _preferencesButton.contentHorizontalAlignment=UIControlContentHorizontalAlignmentLeading;
+    NSArray<NSString *> *nameParts=[(_product[@"name"] ?: @"World of Warcraft") componentsSeparatedByString:@"·"];
+    NSMutableArray<NSString *> *nameWords=[NSMutableArray new];
+    for (NSString *part in nameParts) {
+        NSString *word=[part stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        if (word.length) [nameWords addObject:word];
+    }
+    _heroTitleLabel.text=[nameWords componentsJoinedByString:@" "].uppercaseString;
     _compatibilityLabel.text=([_product[@"id"] isEqual:@"wow"] || [_product[@"id"] isEqual:@"wow_beta"] || [_product[@"id"] isEqual:@"wow_classic"])?
         @"Compatibility with this edition is not yet verified.":
         @"";
     _compatibilityLabel.hidden=!_compatibilityLabel.text.length;
+    _customLink.hidden=![_product[@"id"] isEqualToString:@"wow_classic_beta"];
     _editionButton.enabled=!_busy && !_starting && !_sessionUsed;
     _preferencesButton.enabled=_editionButton.enabled;
     self.navigationItem.rightBarButtonItem.enabled=!_updating && !_starting;
@@ -397,6 +521,7 @@ static UIStackView *Stack(NSArray<UIView *> *views, CGFloat spacing) {
     case TKExecutionModeNone:
         _startupLabel.text=@"This build cannot start the game. See Diagnostics and logs."; break;
     }
+    [NSNotificationCenter.defaultCenter postNotificationName:TKWoWStateDidChangeNotification object:self];
 }
 - (void)presentSheet:(UIAlertController *)sheet anchor:(UIView *)anchor {
     [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
@@ -571,6 +696,7 @@ static BOOL TKTouchGamepadWithControllerOn(void) {
     [self presentViewController:sheet animated:YES completion:nil];
 }
 - (void)addOns {
+    if (self.showAddOns) { self.showAddOns(); return; }
     if (_busy || _starting) {
         UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"Add-ons" message:@"Wait for the current update or startup to finish." preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
@@ -598,6 +724,7 @@ static BOOL TKTouchGamepadWithControllerOn(void) {
     [self presentViewController:nav animated:YES completion:nil];
 }
 - (void)settings {
+    if (self.showSettings) { self.showSettings(); return; }
     UIAlertController *sheet=[UIAlertController alertControllerWithTitle:@"Settings"
         message:@"Updates install automatically while this app is open. Settings and addons are preserved. Startup preparation is separate from downloading updates." preferredStyle:UIAlertControllerStyleActionSheet];
     if(!_busy && !_starting && !_sessionUsed) {
@@ -768,19 +895,23 @@ static BOOL TKTouchGamepadWithControllerOn(void) {
     [self render];
 }
 - (void)diagnostics { if (self.showDiagnostics) self.showDiagnostics(); }
-- (void)about {
-    UIViewController *controller=[UIViewController new]; controller.title=@"About";
-    controller.overrideUserInterfaceStyle=UIUserInterfaceStyleDark;
-    UITextView *text=[UITextView new]; text.editable=NO;
-    text.font=[UIFont preferredFontForTextStyle:UIFontTextStyleBody]; text.adjustsFontForContentSizeCategory=YES;
-    text.textContainerInset=UIEdgeInsetsMake(20,20,20,20);
-    NSMutableString *credits=[@"Tolkara — an independent World of Warcraft launcher; the on-device updater is merged from the Wolkara fork. Not affiliated with or endorsed by Blizzard Entertainment. World of Warcraft belongs to Blizzard Entertainment.\n\n" mutableCopy];
-    for (NSString *name in @[@"LICENSE",@"NOTICE.md"]) {
-        NSString *path=[NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:name];
-        NSString *notice=[NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:NULL];
-        if (notice) [credits appendFormat:@"%@\n%@\n\n",name,notice];
-    }
-    text.text=credits; controller.view=text;
-    [self.navigationController pushViewController:controller animated:YES];
+- (NSDictionary *)product { return _product; }
+- (TKWoWInstallation *)installation { return _installation; }
+- (BOOL)isBusy { return _busy; }
+- (BOOL)isUpdating { return _updating; }
+- (NSString *)region { return _region; }
+- (NSString *)locale { return _locale; }
+- (void)checkForUpdatesNow { [self checkForUpdatesAndLaunch:NO]; }
+- (void)setDownloadRegion:(NSString *)region locale:(NSString *)locale {
+    if (![@[@"eu",@"us",@"kr",@"tw"] containsObject:region]) return;
+    if (![@[@"enUS",@"esES"] containsObject:locale]) return;
+    _region=region.copy; _locale=locale.copy;
+    [NSUserDefaults.standardUserDefaults setObject:_region forKey:@"WoWRegion"];
+    [NSUserDefaults.standardUserDefaults setObject:_locale forKey:@"WoWLocale"];
+    [self refresh];
 }
+- (void)about {
+    [self.navigationController pushViewController:[TKAboutViewController new] animated:YES];
+}
+
 @end
