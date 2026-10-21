@@ -117,7 +117,8 @@ UIImage *TKLauncherHeroImage(void) {
     static UIImage *image;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        NSString *path=[NSBundle.mainBundle pathForResource:@"HeroForever" ofType:@"png"];
+        NSString *path=[NSBundle.mainBundle pathForResource:@"HeroForever" ofType:@"jpg"];
+        if (!path) path=[NSBundle.mainBundle pathForResource:@"HeroForever" ofType:@"png"];
         image=path?[UIImage imageWithContentsOfFile:path]:[UIImage imageNamed:@"HeroForever"];
     });
     return image;

@@ -38,7 +38,7 @@ cat > "$APP/Info.plist" <<'PLIST'
 </dict></plist>
 PLIST
 cp LICENSE NOTICE.md "$APP/"
-cp launcher/Resources/HeroForever.png "$APP/" 2>/dev/null || true
+cp launcher/Resources/HeroForever.jpg "$APP/" 2>/dev/null || true
 codesign --force --sign - "$APP" > /dev/null
 xcrun simctl install "$SIM_ID" "$APP"
 LOG=$(mktemp)

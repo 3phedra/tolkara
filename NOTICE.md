@@ -1,6 +1,10 @@
 # Notices
 
-Tolkara is original work released under the MIT License. Its default build uses
+Tolkara is original work released under the MIT License.
+
+The launcher's hero artwork, `launcher/Resources/HeroForever.jpg`, is a crop of
+Harald Sohlberg, *Winter Night in the Mountains* (1914), public domain, via
+Wikimedia Commons. Its default build uses
 Apple's public SDK frameworks and the Python standard library, without bundled
 third-party source code or libraries.
 
