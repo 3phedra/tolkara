@@ -90,6 +90,18 @@ static void AKDrainFixtureEvents(void) {
     while ((event = [NSApp nextEventMatchingMask:UINT64_MAX untilDate:NSDate.distantPast inMode:NSDefaultRunLoopMode dequeue:YES])) [NSApp sendEvent:event];
 }
 
+@interface AKToolbarPan : UIPanGestureRecognizer
+@property(nonatomic) UIGestureRecognizerState testState;
+@property(nonatomic) CGPoint movement;
+@end
+@implementation AKToolbarPan
+- (UIGestureRecognizerState)state { return self.testState; }
+- (CGPoint)translationInView:(UIView *)view { (void)view; return self.movement; }
+@end
+@interface AKTouchControls (FixtureToolbar)
+- (void)moveToolbarGroup:(UIPanGestureRecognizer *)pan;
+@end
+
 static UIView *AKFindInputView(UIView *root, NSString *identifier) {
     if ([root.accessibilityIdentifier isEqual:identifier]) return root;
     for (UIView *child in root.subviews) {
@@ -116,6 +128,31 @@ static void AKFixtureInputSource(void *context) {
     AKTouchGamepad *gamepad = [host valueForKey:@"_touchGamepad"];
     for (NSUInteger surface = 0; surface < 2; surface++) {
         if (surface == 0) [controls toggleKeyboard]; else [gamepad toggleSettings];
+        if (surface == 1) {
+            UISwitch *edit = (id)AKFindInputView(host, @"wolkara.controls.edit");
+            edit.on = YES; [edit sendActionsForControlEvents:UIControlEventValueChanged];
+            [host layoutIfNeeded];
+            UIView *move = AKFindInputView(host, @"wolkara.toolbar.move");
+            NSLog(@"TOOLBAR_MOVE_HANDLE %@ hidden=%d frame=%@", move, move.hidden, NSStringFromCGRect(move.frame));
+            CGRect before = move.frame;
+            AKToolbarPan *pan = [AKToolbarPan new];
+            [move addGestureRecognizer:pan];
+            pan.testState = UIGestureRecognizerStateBegan; [controls moveToolbarGroup:pan];
+            pan.movement = CGPointMake(60, 40);
+            pan.testState = UIGestureRecognizerStateChanged; [controls moveToolbarGroup:pan];
+            pan.testState = UIGestureRecognizerStateEnded; [controls moveToolbarGroup:pan];
+            [host layoutIfNeeded];
+            NSLog(@"TOOLBAR_MOVE before=%@ after=%@", NSStringFromCGRect(before), NSStringFromCGRect(move.frame));
+            assert(!CGRectEqualToRect(before, move.frame));
+            CGRect afterMove = move.frame;
+            [move removeGestureRecognizer:pan];
+            edit.on = NO;
+            [edit sendActionsForControlEvents:UIControlEventValueChanged];
+            [host layoutIfNeeded];
+            NSLog(@"TOOLBAR_PERSIST afterEditOff=%@", NSStringFromCGRect(move.frame));
+            assert(CGRectEqualToRect(afterMove, move.frame));
+            [host layoutIfNeeded];
+        }
         __block BOOL trackingFired = NO, defaultFired = NO;
         NSTimer *tracking = [NSTimer timerWithTimeInterval:0.02 repeats:NO block:^(NSTimer *timer) {
             (void)timer; trackingFired = YES;

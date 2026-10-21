@@ -1,4 +1,5 @@
 #import <UIKit/UIKit.h>
+@class AKGamepadLayout;
 
 @protocol AKTouchControlsDelegate <NSObject>
 - (void)touchMoveBy:(CGPoint)delta;
@@ -28,6 +29,7 @@ extern NSString *const AKTouchControlsDefaultsKey;   // "AKTouchControls"
 @property (class, nonatomic, readonly) BOOL enabled;
 // The switch was set to "off" by hand: do not install the controls on demand.
 @property (class, nonatomic, readonly) BOOL explicitlyDisabled;
+- (instancetype)initWithFrame:(CGRect)frame layout:(AKGamepadLayout *)layout;
 @property (nonatomic, weak) id<AKTouchControlsDelegate> delegate;
 @property (nonatomic) BOOL trackpadEnabled;
 @property (nonatomic, readonly) BOOL gamepadEnabled;
@@ -37,5 +39,7 @@ extern NSString *const AKTouchControlsDefaultsKey;   // "AKTouchControls"
 - (void)cancelTouches;
 - (void)toggleKeyboard;
 - (void)showKeyboard;
+// Drives the optional top-bar move affordance from the gamepad edit mode.
+- (void)setToolbarEditing:(BOOL)editing;
 - (void)dismissKeyboard;
 @end

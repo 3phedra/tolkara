@@ -3,6 +3,7 @@
 
 static NSString *const LayoutKey = @"WolkaraTouchLayoutV1";
 NSNotificationName const AKGamepadLayoutDidChangeNotification = @"AKGamepadLayoutDidChange";
+NSNotificationName const AKGamepadEditingDidChangeNotification = @"AKGamepadEditingDidChange";
 static CGFloat Clamp(CGFloat value, CGFloat minimum, CGFloat maximum, CGFloat fallback) {
     return isfinite(value) ? MAX(minimum,MIN(maximum,value)) : fallback;
 }

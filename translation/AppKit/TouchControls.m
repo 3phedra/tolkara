@@ -3,6 +3,13 @@
 #import "TouchGamepadLayout.h"
 #import "TouchHaptics.h"
 
+
+@interface AKToolbarMoveHandle : UIView
+@property(nonatomic, copy) NSString *itemName;
+@end
+@implementation AKToolbarMoveHandle
+@end
+
 @interface AKTouchControls (KeyboardState)
 - (void)updateKeyboardButton;
 - (void)updateDraftButtons;
@@ -154,6 +161,11 @@ static NSString *const AKTouchTrackpadDefaultsKey = @"AKTouchTrackpadEnabled";
     AKKeyboardTextView *_keyboardInput;
     AKTrackpad _pad;
     AKTouchHaptics *_haptics;
+    UIView *_toolbarGroup;
+    AKToolbarMoveHandle *_toolbarMoveHandle;
+    BOOL _toolbarEditing;
+    AKGamepadLayout *_toolbarLayout;
+    CGRect _toolbarDragOrigin;
 }
 
 static void AKEmitTouch(void *context, AKTrackpadAction action, double x, double y, unsigned button) {
@@ -188,13 +200,23 @@ static void AKEmitTouch(void *context, AKTrackpadAction action, double x, double
     button.accessibilityLabel = label;
     [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
     [button addTarget:self action:@selector(buttonTouchDown) forControlEvents:UIControlEventTouchDown];
-    [self addSubview:button];
+    [_toolbarGroup addSubview:button];
     return button;
 }
 
 - (instancetype)initWithFrame:(CGRect)frame {
+    return [self initWithFrame:frame layout:nil];
+}
+
+- (instancetype)initWithFrame:(CGRect)frame layout:(AKGamepadLayout *)layout {
     if ((self = [super initWithFrame:frame])) {
         self.layer.zPosition = 100001;
+        self.clipsToBounds = NO;
+        _toolbarGroup = [UIView new];
+        _toolbarGroup.frame = self.bounds;
+        _toolbarGroup.clipsToBounds = NO;
+        [self addSubview:_toolbarGroup];
+        _toolbarLayout = layout ?: [[AKGamepadLayout alloc] initWithDefaults:NSUserDefaults.standardUserDefaults];
         _haptics = [AKTouchHaptics new];
         _keyboardInput = [[AKKeyboardTextView alloc] initWithFrame:CGRectMake(0, 0, 1, 1) textContainer:nil];
         _keyboardInput.inputOwner = self;
@@ -210,6 +232,29 @@ static void AKEmitTouch(void *context, AKTrackpadAction action, double x, double
         _settingsButton = [self buttonWithSymbol:@"gearshape" label:@"Touch control settings" action:@selector(showControlSettings)];
         _settingsButton.accessibilityIdentifier = @"wolkara.controlSettings";
         _gamepadButton.accessibilityHint = @"Show touch controls when no physical controller is connected. Tap to turn off or restore automatic controls.";
+        _toolbarMoveHandle = [AKToolbarMoveHandle new];
+        _toolbarMoveHandle.backgroundColor = [UIColor.systemYellowColor colorWithAlphaComponent:0.16];
+        _toolbarMoveHandle.layer.borderWidth = 1;
+        _toolbarMoveHandle.layer.borderColor = [UIColor.systemYellowColor colorWithAlphaComponent:0.9].CGColor;
+        _toolbarMoveHandle.layer.cornerRadius = 10;
+        _toolbarMoveHandle.hidden = YES;
+        _toolbarMoveHandle.isAccessibilityElement = YES;
+        _toolbarMoveHandle.accessibilityLabel = @"Move the top control bar";
+        _toolbarMoveHandle.accessibilityIdentifier = @"wolkara.toolbar.move";
+        UIPanGestureRecognizer *toolbarPan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(moveToolbarGroup:)];
+        [_toolbarMoveHandle addGestureRecognizer:toolbarPan];
+        [self addSubview:_toolbarMoveHandle];
+        // Also attach the pan to the buttons themselves. A transparent handle
+        // can lose the hit test on some layouts; dragging any button still
+        // moves the whole group, and the button actions are suppressed while
+        // the toolbar is in edit mode.
+        for (UIButton *button in @[_trackpadButton,_keyboardButton,_gamepadButton,_settingsButton]) {
+            UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(moveToolbarGroup:)];
+            pan.cancelsTouchesInView = YES;
+            [button addGestureRecognizer:pan];
+        }
+        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(toolbarEditingChanged:)
+            name:AKGamepadEditingDidChangeNotification object:nil];
         NSNumber *gamepad = [NSUserDefaults.standardUserDefaults objectForKey:@"TKTouchGamepadEnabled"];
         _gamepadEnabled = gamepad ? gamepad.boolValue : YES;
         [self setGamepadVisible:NO];
@@ -243,24 +288,61 @@ static void AKEmitTouch(void *context, AKTrackpadAction action, double x, double
 // themselves intercept hit testing.
 - (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event {
     (void)event;
+    if (CGRectContainsPoint(_toolbarGroup.frame, point)) return YES;
     return CGRectContainsPoint(_trackpadButton.frame, point) || CGRectContainsPoint(_keyboardButton.frame, point)
         || CGRectContainsPoint(_gamepadButton.frame, point) || CGRectContainsPoint(_settingsButton.frame, point);
 }
 - (void)controlAppearanceChanged:(NSNotification *)notification {
     (void)notification;
-    AKGamepadLayout *layout = [[AKGamepadLayout alloc] initWithDefaults:NSUserDefaults.standardUserDefaults];
-    _haptics.enabled = layout.hapticsEnabled;
-    for (UIButton *button in @[_trackpadButton, _keyboardButton, _gamepadButton, _settingsButton]) button.alpha = layout.opacity;
+    _haptics.enabled = _toolbarLayout.hapticsEnabled;
+    for (UIButton *button in @[_trackpadButton, _keyboardButton, _gamepadButton, _settingsButton]) button.alpha = _toolbarLayout.opacity;
+    [self setNeedsLayout];
 }
-- (void)buttonTouchDown { [_haptics buttonPressed]; }
+- (void)buttonTouchDown { if (_toolbarEditing) return; [_haptics buttonPressed]; }
 
 - (void)layoutSubviews {
     [super layoutSubviews];
-    _trackpadButton.frame = CGRectMake(0, 0, 44, 44);
-    _keyboardButton.frame = CGRectMake(52, 0, 44, 44);
-    _gamepadButton.frame = CGRectMake(104, 0, 44, 44);
-    _settingsButton.frame = CGRectMake(156, 0, 44, 44);
+    UIView *host = self.superview ?: self;
+    CGRect safe = UIEdgeInsetsInsetRect(host.bounds,host.safeAreaInsets);
+    CGRect fallback = CGRectMake(CGRectGetMidX(safe)-100,CGRectGetMinY(safe)+8,200,44);
+    CGRect hostFrame = [_toolbarLayout frameForItem:@"toolbar.group" defaultFrame:fallback inBounds:safe];
+    CGRect groupFrame = [self convertRect:hostFrame fromView:host];
+    _toolbarGroup.frame = groupFrame;
+    _toolbarGroup.bounds = CGRectMake(0,0,200,44);
+    NSArray<UIButton *> *buttons = @[_trackpadButton,_keyboardButton,_gamepadButton,_settingsButton];
+    for (NSUInteger i=0; i<buttons.count; i++) buttons[i].frame = CGRectMake(52*i,0,44,44);
+    _toolbarMoveHandle.frame = _toolbarGroup.frame;
+    _toolbarMoveHandle.layer.cornerRadius = 10;
+    _toolbarMoveHandle.hidden = !_toolbarEditing;
 }
+
+- (void)setToolbarEditing:(BOOL)editing {
+    if (_toolbarEditing == editing) return;
+    _toolbarEditing = editing;
+    [self setNeedsLayout];
+}
+
+- (void)toolbarEditingChanged:(NSNotification *)note {
+    [self setToolbarEditing:[note.userInfo[@"editing"] boolValue]];
+}
+
+- (void)moveToolbarGroup:(UIPanGestureRecognizer *)pan {
+    UIView *host = self.superview ?: self;
+    CGRect safe = UIEdgeInsetsInsetRect(host.bounds,host.safeAreaInsets);
+    if (pan.state == UIGestureRecognizerStateBegan) {
+        _toolbarDragOrigin = [_toolbarGroup convertRect:_toolbarGroup.bounds toView:host];
+    } else if (pan.state == UIGestureRecognizerStateChanged) {
+        if (!_toolbarLayout) return;
+        CGRect frame = _toolbarDragOrigin;
+        CGPoint delta = [pan translationInView:host];
+        frame.origin.x += delta.x; frame.origin.y += delta.y;
+        [_toolbarLayout moveItem:@"toolbar.group" toFrame:frame inBounds:safe];
+        [self setNeedsLayout]; [self layoutIfNeeded];
+    } else if (pan.state == UIGestureRecognizerStateEnded || pan.state == UIGestureRecognizerStateCancelled) {
+        [_toolbarLayout save];
+    }
+}
+
 - (void)setTrackpadEnabled:(BOOL)enabled {
     [self cancelTouches];
     _trackpadEnabled = enabled;
@@ -270,11 +352,13 @@ static void AKEmitTouch(void *context, AKTrackpadAction action, double x, double
     [self.delegate touchTrackpadChanged:enabled];
 }
 - (void)toggleTrackpad {
+    if (_toolbarEditing) return;
     self.trackpadEnabled = !self.trackpadEnabled;
     [NSUserDefaults.standardUserDefaults setBool:self.trackpadEnabled forKey:AKTouchTrackpadDefaultsKey];
 }
 - (BOOL)gamepadEnabled { return _gamepadEnabled; }
 - (void)showControlSettings {
+    if (_toolbarEditing) return;
     [self cancelTouches]; [self dismissKeyboard]; [self.delegate touchControlSettings];
 }
 - (void)setGamepadVisible:(BOOL)visible {
@@ -282,6 +366,7 @@ static void AKEmitTouch(void *context, AKTrackpadAction action, double x, double
     _gamepadButton.accessibilityValue = _gamepadEnabled ? (visible ? @"Active" : @"Automatic") : @"Off";
 }
 - (void)toggleGamepad {
+    if (_toolbarEditing) return;
     _gamepadEnabled = !_gamepadEnabled;
     [NSUserDefaults.standardUserDefaults setBool:_gamepadEnabled forKey:@"TKTouchGamepadEnabled"];
     [self setGamepadVisible:NO];
@@ -309,6 +394,7 @@ static void AKEmitTouch(void *context, AKTrackpadAction action, double x, double
     [self.delegate touchKeyboardVisibilityChanged:self.keyboardVisible];
 }
 - (void)toggleKeyboard {
+    if (_toolbarEditing) return;
     [self cancelTouches];
     if (self.keyboardVisible) [self dismissKeyboard];
     else [self becomeFirstResponder];

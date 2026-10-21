@@ -2,6 +2,8 @@
 
 // Posted after saving; the object is the defaults store that changed.
 FOUNDATION_EXPORT NSNotificationName const AKGamepadLayoutDidChangeNotification;
+// User info key @"editing" (NSNumber). Posted while the overlay edit mode runs.
+FOUNDATION_EXPORT NSNotificationName const AKGamepadEditingDidChangeNotification;
 
 // Preferences contain only UI appearance/feedback; never controller or game state.
 @interface AKGamepadLayout : NSObject

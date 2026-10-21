@@ -355,7 +355,8 @@ static BOOL AKResponderIsTextClient(NSResponder *responder) {
     return self;
 }
 - (void)installTouchControls {
-    _touchControls = [[AKTouchControls alloc] initWithFrame:CGRectZero];
+    AKGamepadLayout *touchLayout = [[AKGamepadLayout alloc] initWithDefaults:NSUserDefaults.standardUserDefaults];
+    _touchControls = [[AKTouchControls alloc] initWithFrame:CGRectZero layout:touchLayout];
     _touchControls.delegate = self;
     _touchControls.translatesAutoresizingMaskIntoConstraints = NO;
     [self addSubview:_touchControls];
@@ -372,8 +373,12 @@ static BOOL AKResponderIsTextClient(NSResponder *responder) {
     _performanceOverlay.hidden = !layout.performanceOverlayEnabled;
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(performanceOverlayLayoutChanged:)
         name:AKGamepadLayoutDidChangeNotification object:nil];
-    _touchGamepad = [[AKTouchGamepad alloc] initWithHostView:self];
+    _touchGamepad = [[AKTouchGamepad alloc] initWithHostView:self layout:touchLayout];
     __weak AKHostView *weakSelf = self;
+    _touchGamepad.toolbarEditingChanged = ^(BOOL editing) {
+        AKHostView *host = weakSelf;
+        [host->_touchControls setToolbarEditing:editing];
+    };
     _touchGamepad.visibilityChanged = ^(BOOL visible) {
         AKHostView *host = weakSelf;
         if (!host) return;

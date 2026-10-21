@@ -117,6 +117,12 @@ CGPoint AKTouchGamepadStickPosition(CGPoint point, CGSize size) {
 - (void)reset { [self updatePosition:CGPointZero]; }
 @end
 
+@interface AKGamepadResizeHandle : UIView
+@property(nonatomic, copy) NSString *itemName;
+@end
+@implementation AKGamepadResizeHandle
+@end
+
 @interface AKGamepadOverlay : UIView <UIGestureRecognizerDelegate>
 @property(nonatomic, readonly) NSDictionary<NSString *,AKGamepadButton *> *buttons;
 @property(nonatomic, readonly) AKGamepadStick *leftStick;
@@ -126,6 +132,7 @@ CGPoint AKTouchGamepadStickPosition(CGPoint point, CGSize size) {
 @property(nonatomic, readonly) BOOL configuring;
 @property(nonatomic, readonly) BOOL editing;
 @property(nonatomic, copy) void (^configurationChanged)(void);
+@property(nonatomic, copy) void (^editingChanged)(BOOL editing);
 - (void)reset;
 - (void)toggleSettings;
 - (void)finishConfiguration;
@@ -134,6 +141,9 @@ CGPoint AKTouchGamepadStickPosition(CGPoint point, CGSize size) {
     NSDictionary<NSString *,UIView *> *_items;
     NSMutableDictionary<NSString *,NSValue *> *_dragOrigins;
     NSMutableDictionary<NSString *,NSValue *> *_baseFrames;
+    NSMutableDictionary<NSString *,AKGamepadResizeHandle *> *_resizeHandles;
+    CGPoint _resizeCenter;
+    CGFloat _resizeStartDistance;
     CGFloat _pinchStartScale;
     BOOL _pinching;
     UIView *_settings;
@@ -145,11 +155,15 @@ CGPoint AKTouchGamepadStickPosition(CGPoint point, CGSize size) {
     CAShapeLayer *_editGrid, *_editAxes;
 }
 - (instancetype)initWithFrame:(CGRect)frame {
+    return [self initWithFrame:frame layout:nil];
+}
+
+- (instancetype)initWithFrame:(CGRect)frame layout:(AKGamepadLayout *)layout {
     if ((self = [super initWithFrame:frame])) {
         self.multipleTouchEnabled = YES;
         // Above the guest surface, below the cursor and keyboard toolbar.
         self.layer.zPosition = 99999;
-        _preferences = [[AKGamepadLayout alloc] initWithDefaults:NSUserDefaults.standardUserDefaults];
+        _preferences = layout ?: [[AKGamepadLayout alloc] initWithDefaults:NSUserDefaults.standardUserDefaults];
         _dragOrigins = [NSMutableDictionary new];
         _baseFrames = [NSMutableDictionary new];
         _editGrid = [CAShapeLayer layer]; _editAxes = [CAShapeLayer layer];
@@ -184,6 +198,23 @@ CGPoint AKTouchGamepadStickPosition(CGPoint point, CGSize size) {
         [left addSubview:_leftStick]; [right addSubview:_rightStick];
         _items = @{@"left":left,@"right":right,@"LB":buttons[GCInputLeftShoulder],@"LT":buttons[GCInputLeftTrigger],
             @"RB":buttons[GCInputRightShoulder],@"RT":buttons[GCInputRightTrigger],@"menu":buttons[GCInputButtonMenu]};
+        _resizeHandles = [NSMutableDictionary new];
+        for (NSString *name in @[@"LB",@"LT",@"RB",@"RT",@"menu"]) {
+            AKGamepadResizeHandle *handle = [AKGamepadResizeHandle new];
+            handle.itemName = name;
+            handle.backgroundColor = [UIColor.systemYellowColor colorWithAlphaComponent:0.92];
+            handle.layer.cornerRadius = 9;
+            handle.layer.borderWidth = 1;
+            handle.layer.borderColor = [UIColor colorWithWhite:0 alpha:0.45].CGColor;
+            handle.hidden = YES;
+            handle.isAccessibilityElement = YES;
+            handle.accessibilityLabel = [NSString stringWithFormat:@"Resize %@", name];
+            handle.accessibilityIdentifier = [@"wolkara.layout.resize." stringByAppendingString:name];
+            UIPanGestureRecognizer *handlePan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(resizeHandle:)];
+            [handle addGestureRecognizer:handlePan];
+            [self addSubview:handle];
+            _resizeHandles[name] = handle;
+        }
         for (NSString *name in _items) {
             UIView *item = _items[name]; item.accessibilityIdentifier = [@"wolkara.layout." stringByAppendingString:name];
             // Retain button identifiers used by input tests and accessibility.
@@ -200,7 +231,7 @@ CGPoint AKTouchGamepadStickPosition(CGPoint point, CGSize size) {
         _editDone.accessibilityIdentifier = @"wolkara.layout.done";
         [_editDone addTarget:self action:@selector(finishConfiguration) forControlEvents:UIControlEventTouchUpInside];
         [self addSubview:_editDone];
-        _hint = [UILabel new]; _hint.text = @"Drag to move · pinch to resize";
+        _hint = [UILabel new]; _hint.text = @"Drag to move · pinch, or drag a yellow corner dot, to resize";
         _hint.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
         _hint.textColor = UIColor.whiteColor; _hint.textAlignment = NSTextAlignmentCenter;
         _hint.userInteractionEnabled = NO; [self addSubview:_hint];
@@ -224,6 +255,7 @@ CGPoint AKTouchGamepadStickPosition(CGPoint point, CGSize size) {
     _leftStick.enabled = _rightStick.enabled = !self.configuring;
     _editDone.hidden = _hint.hidden = !_editing;
     _editGrid.hidden = _editAxes.hidden = !_editing;
+    for (AKGamepadResizeHandle *handle in _resizeHandles.allValues) handle.hidden = !_editing;
     [self setNeedsLayout];
 }
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
@@ -268,6 +300,13 @@ CGPoint AKTouchGamepadStickPosition(CGPoint point, CGSize size) {
     [self place:@"RB" frame:CGRectMake(right-w*2-8,top,w,h) baseSize:CGSizeMake(56,44) safe:safe];
     [self place:@"menu" frame:CGRectMake(CGRectGetMidX(self.bounds)-22,bottom-side+190*side/216-22,44,44)
         baseSize:CGSizeMake(44,44) safe:safe];
+    for (NSString *name in _resizeHandles) {
+        AKGamepadResizeHandle *handle = _resizeHandles[name];
+        CGRect frame = _items[name].frame;
+        handle.bounds = CGRectMake(0,0,18,18);
+        handle.center = CGPointMake(CGRectGetMaxX(frame)-2,CGRectGetMaxY(frame)-2);
+        handle.hidden = !_editing;
+    }
     _editDone.frame = CGRectMake(CGRectGetMidX(safe)-70,CGRectGetMinY(safe)+60,140,40);
     _hint.frame = CGRectMake(CGRectGetMidX(safe)-150,CGRectGetMinY(safe)+103,300,22);
     if (_settings) {
@@ -322,6 +361,29 @@ CGPoint AKTouchGamepadStickPosition(CGPoint point, CGSize size) {
         [_preferences save]; [_dragOrigins removeObjectForKey:name];
     }
 }
+- (void)resizeHandle:(UIPanGestureRecognizer *)pan {
+    AKGamepadResizeHandle *handle = [pan.view isKindOfClass:AKGamepadResizeHandle.class] ? (AKGamepadResizeHandle *)pan.view : nil;
+    if (!handle || !_editing) return;
+    NSString *name = handle.itemName;
+    if (!name) return;
+    if (pan.state == UIGestureRecognizerStateBegan) {
+        _pinching = YES;
+        _pinchStartScale = [_preferences scaleForItem:name];
+        _resizeCenter = _items[name].center;
+        CGPoint point = [pan locationInView:self];
+        _resizeStartDistance = MAX(1,hypot(point.x-_resizeCenter.x,point.y-_resizeCenter.y));
+    } else if (pan.state == UIGestureRecognizerStateChanged) {
+        CGPoint point = [pan locationInView:self];
+        CGFloat distance = hypot(point.x-_resizeCenter.x,point.y-_resizeCenter.y);
+        CGFloat value = _pinchStartScale * distance / _resizeStartDistance;
+        if (isfinite(value)) [_preferences setScale:value forItem:name];
+        [self setNeedsLayout]; [self layoutIfNeeded];
+    } else if (pan.state == UIGestureRecognizerStateEnded || pan.state == UIGestureRecognizerStateCancelled) {
+        [_preferences save];
+        _pinching = NO;
+    }
+}
+
 - (void)resize:(UIPinchGestureRecognizer *)pinch {
     NSString *name = [_items allKeysForObject:pinch.view].firstObject;
     if (!name || !_editing) return;
@@ -389,7 +451,7 @@ CGPoint AKTouchGamepadStickPosition(CGPoint point, CGSize size) {
     UIStackView *editRow = [[UIStackView alloc] initWithArrangedSubviews:@[[self label:@"Edit layout"],_editSwitch]];
     editRow.axis = UILayoutConstraintAxisHorizontal; editRow.alignment = UIStackViewAlignmentCenter;
     [stack addArrangedSubview:editRow];
-    [stack addArrangedSubview:[self label:@"Move each shoulder button, +, or a stick with its ring. Pinch a control to resize it. Changes are saved on this device."]];
+    [stack addArrangedSubview:[self label:@"Move each shoulder button, +, or a stick with its ring. Pinch a large control to resize it, or drag the yellow corner dot on any shoulder button. Changes are saved on this device."]];
     UIButton *reset = [UIButton buttonWithType:UIButtonTypeSystem]; [reset setTitle:@"Reset to defaults" forState:UIControlStateNormal];
     reset.accessibilityIdentifier = @"wolkara.controls.reset";
     [reset addTarget:self action:@selector(resetLayout) forControlEvents:UIControlEventTouchUpInside];
@@ -433,6 +495,8 @@ CGPoint AKTouchGamepadStickPosition(CGPoint point, CGSize size) {
     if (!sender.on) return;
     [self reset]; _editing = YES; [_settings removeFromSuperview]; _settings = nil;
     _sliders = nil; _values = nil; _editSwitch = nil; _hapticsSwitch = nil; _overlaySwitch = nil;
+    [NSNotificationCenter.defaultCenter postNotificationName:AKGamepadEditingDidChangeNotification object:self userInfo:@{@"editing":@YES}];
+    if (self.editingChanged) self.editingChanged(YES);
     [self updateAppearance]; if (self.configurationChanged) self.configurationChanged();
 }
 - (void)resetLayout {
@@ -443,9 +507,14 @@ CGPoint AKTouchGamepadStickPosition(CGPoint point, CGSize size) {
     [self updateValues]; [self updateAppearance];
 }
 - (void)finishConfiguration {
+    BOOL wasEditing = _editing;
     [self reset]; [_preferences save]; _editing = NO; [_dragOrigins removeAllObjects];
     [_settings removeFromSuperview]; _settings = nil; _sliders = nil; _values = nil; _editSwitch = nil; _hapticsSwitch = nil; _overlaySwitch = nil;
     [self updateAppearance]; if (self.configurationChanged) self.configurationChanged();
+    if (wasEditing) {
+        [NSNotificationCenter.defaultCenter postNotificationName:AKGamepadEditingDidChangeNotification object:self userInfo:@{@"editing":@NO}];
+        if (self.editingChanged) self.editingChanged(NO);
+    }
 }
 - (void)reset {
     for (AKGamepadButton *button in _buttons.allValues) [button releaseInput];
@@ -461,10 +530,14 @@ CGPoint AKTouchGamepadStickPosition(CGPoint point, CGSize size) {
     BOOL _active, _connecting, _cancelConnect, _failed, _invalidated;
 }
 - (instancetype)initWithHostView:(UIView *)host {
+    return [self initWithHostView:host layout:nil];
+}
+
+- (instancetype)initWithHostView:(UIView *)host layout:(AKGamepadLayout *)layout {
     if ((self = [super init])) {
         _host = host; _enabled = YES;
         _haptics = [self makeHaptics];
-        _overlay = [[AKGamepadOverlay alloc] initWithFrame:host.bounds];
+        _overlay = [[AKGamepadOverlay alloc] initWithFrame:host.bounds layout:layout];
         _overlay.autoresizingMask = UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
         [host addSubview:_overlay];
         __weak AKTouchGamepad *weakSelf = self;
@@ -472,6 +545,10 @@ CGPoint AKTouchGamepadStickPosition(CGPoint point, CGSize size) {
             AKTouchGamepad *self = weakSelf;
             [self updateHaptics];
             if (self.visibilityChanged) self.visibilityChanged(self.visible);
+        };
+        _overlay.editingChanged = ^(BOOL editing) {
+            AKTouchGamepad *self = weakSelf;
+            if (self.toolbarEditingChanged) self.toolbarEditingChanged(editing);
         };
         for (AKGamepadButton *button in _overlay.buttons.allValues)
             [button addTarget:self action:@selector(buttonChanged:) forControlEvents:UIControlEventValueChanged];
