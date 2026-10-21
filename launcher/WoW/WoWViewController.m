@@ -429,7 +429,7 @@ static UIStackView *Stack(NSArray<UIView *> *views, CGFloat spacing) {
         @"Compatibility with this edition is not yet verified.":
         @"";
     _compatibilityLabel.hidden=!_compatibilityLabel.text.length;
-    _customLink.hidden=![_product[@"id"] isEqualToString:@"wow_classic_beta"];
+    _customLink.hidden=!([_product[@"id"] isEqualToString:@"wowf"] || [_product[@"id"] isEqualToString:@"wow_classic_beta"]);
     _editionButton.enabled=!_busy && !_starting && !_sessionUsed;
     _preferencesButton.enabled=_editionButton.enabled;
     self.navigationItem.rightBarButtonItem.enabled=!_updating && !_starting;
@@ -625,7 +625,7 @@ static BOOL TKTouchGamepadWithControllerOn(void) {
     return [NSFileManager.defaultManager fileExistsAtPath:candidate] ? candidate : nil;
 }
 - (NSString *)wowForeverDirectory {
-    if (![_product[@"id"] isEqualToString:@"wow_classic_beta"]) return nil;
+    if (!([_product[@"id"] isEqualToString:@"wowf"] || [_product[@"id"] isEqualToString:@"wow_classic_beta"])) return nil;
     return [self selectedGameDirectory];
 }
 - (void)customServerError:(NSString *)message {

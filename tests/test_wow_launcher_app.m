@@ -80,7 +80,9 @@ static UIView *Find(UIView *view, NSString *identifier) {
     [self performSelector:@selector(changeSelection) withObject:nil afterDelay:0.1];
 }
 - (void)changeSelection {
-    [self.controller selectProduct:TKWoWProducts()[1]];
+    NSDictionary *classicEra=nil;
+    for (NSDictionary *product in TKWoWProducts()) if ([product[@"id"] isEqualToString:@"wow_classic_era"]) classicEra=product;
+    [self.controller selectProduct:classicEra];
     [self performSelector:@selector(checkSelection) withObject:nil afterDelay:0.8];
 }
 - (void)checkSelection {
@@ -88,7 +90,9 @@ static UIView *Find(UIView *view, NSString *identifier) {
     assert([[(UIButton *)Find(self.controller.view,@"wow.edition") configuration].title containsString:@"Classic Era"]);
     assert([[(UILabel *)Find(self.controller.view,@"wow.title") text] containsString:@"CLASSIC"]);
     assert([[(UILabel *)Find(self.controller.view,@"wow.version") text] containsString:@"demo"]);
-    [self.controller selectProduct:TKWoWProducts()[0]];
+    NSDictionary *foreverBeta=nil;
+    for (NSDictionary *product in TKWoWProducts()) if ([product[@"id"] isEqualToString:@"wow_classic_beta"]) foreverBeta=product;
+    [self.controller selectProduct:foreverBeta];
     [self performSelector:@selector(checkReady) withObject:nil afterDelay:0.3];
 }
 - (void)checkReady {

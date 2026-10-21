@@ -14,6 +14,7 @@ static id Fail(NSError **error, NSString *message) {
 }
 NSArray<NSDictionary *> *TKWoWProducts(void) {
     return @[
+        @{@"id":@"wowf", @"name":@"Forever", @"folder":@"_forever_"},
         @{@"id":@"wow_classic_beta", @"name":@"Forever · Beta", @"folder":@"_classic_beta_"},
         @{@"id":@"wow_classic_era", @"name":@"Classic Era", @"folder":@"_classic_era_"},
         @{@"id":@"wow_classic", @"name":@"Classic", @"folder":@"_classic_"},

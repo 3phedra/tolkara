@@ -1,5 +1,7 @@
 #import "Client.h"
+#if TARGET_OS_IPHONE
 #import <UIKit/UIKit.h>
+#endif
 #import "CASC.h"
 
 // Downloads run in one background URLSession for the whole app, so the system
@@ -183,10 +185,14 @@ NSString *const TKWoWBackgroundSessionIdentifier=@"org.tolkara.wow-updates";
 - (BOOL)wantsBackground {
     [_lock lock]; BOOL preferred=_preferBackground; [_lock unlock];
     if(preferred) return YES;
+#if TARGET_OS_IPHONE
     __block BOOL active=NO;
     if(NSThread.isMainThread) active=UIApplication.sharedApplication.applicationState==UIApplicationStateActive;
     else dispatch_sync(dispatch_get_main_queue(),^{ active=UIApplication.sharedApplication.applicationState==UIApplicationStateActive; });
     return !active;
+#else
+    return NO;
+#endif
 }
 - (BOOL)cancelled { [_lock lock]; BOOL value=_cancelled; [_lock unlock]; return value; }
 - (NSData *)fetch:(NSURL *)url limit:(NSUInteger)limit error:(NSError **)error {
@@ -385,6 +391,37 @@ static NSUInteger ManifestSize(NSString *text) {
     if (![decoded writeToFile:path options:NSDataWritingAtomic error:error]) return nil;
     return path;
 }
+- (BOOL)stageFiles:(NSArray<NSDictionary *> *)files plan:(NSDictionary *)plan
+    directory:(NSString *)directory output:(NSString *)output error:(NSError **)error {
+    NSDictionary *current=[self versionForProduct:plan[@"product"] region:plan[@"region"] error:error];
+    if (!current) return NO;
+    if (![current[@"BuildConfig"] isEqual:plan[@"version"][@"BuildConfig"]] ||
+        ![current[@"CDNConfig"] isEqual:plan[@"version"][@"CDNConfig"]]) {
+        if (error) *error=TKWoWError(@"A newer build is available. Check this channel again.");
+        return NO;
+    }
+    NSData *encoding=[self encodingForPlan:plan directory:directory error:error];
+    if (!encoding) return NO;
+    for (NSUInteger index=0;index<files.count;index++) {
+        @autoreleasepool {
+            NSDictionary *file=files[index];
+            NSString *key=TKWoWEncodingKey(encoding,file[@"contentKey"],error);
+            if (!key) return NO;
+            NSData *raw=[self encodedKey:key size:0 plan:plan
+                indices:[directory stringByAppendingPathComponent:@"indices"] error:error];
+            if (!raw) return NO;
+            NSData *decoded=TKWoWDecode(raw,key,file[@"contentKey"],[file[@"size"] unsignedIntegerValue],256*1024*1024,error);
+            if (!decoded) return NO;
+            NSString *path=[output stringByAppendingPathComponent:file[@"path"]];
+            NSString *parent=path.stringByDeletingLastPathComponent;
+            if (![NSFileManager.defaultManager createDirectoryAtPath:parent withIntermediateDirectories:YES attributes:nil error:error]) return NO;
+            if (![decoded writeToFile:path options:NSDataWritingAtomic error:error]) return NO;
+            if (self.progress) self.progress(@"install",index+1,files.count);
+        }
+    }
+    return YES;
+}
+
 - (NSData *)encodingForPlan:(NSDictionary *)plan directory:(NSString *)directory error:(NSError **)error {
     NSArray *encodingKeys=Words(plan[@"config"][@"encoding"]), *encodingSizes=Words(plan[@"config"][@"encoding-size"]);
     if (encodingKeys.count!=2 || encodingSizes.count!=2 || !TKWoWHashValid(encodingKeys[0])) {

@@ -1,4 +1,5 @@
 #import "CustomServerConfig.h"
+#import "../WoW/Manifest.h"
 
 // Defined by Diagnostics.m in the app; a test links its own definition.
 extern NSString *TKDocumentsPath(NSString *name);
@@ -73,6 +74,20 @@ static NSArray<NSString *> *Lines(NSString *contents) {
     return lines;
 }
 
+static NSString *DefaultPortalForDirectory(NSString *directory) {
+    NSString *flavor = [NSString stringWithContentsOfFile:[directory stringByAppendingPathComponent:@".flavor.info"]
+        encoding:NSUTF8StringEncoding error:NULL];
+    if (![flavor containsString:@"wowf"]) return @"test";
+    NSString *infoPath = [[directory stringByDeletingLastPathComponent] stringByAppendingPathComponent:@".build.info"];
+    NSData *data = [NSData dataWithContentsOfFile:infoPath];
+    NSArray *rows = data ? TKWoWTable(data, NULL) : nil;
+    for (NSDictionary *row in rows) {
+        if ([row[@"Product"] isEqual:@"wowf"] && [row[@"Active"] isEqual:@"1"] && [row[@"Branch"] length])
+            return [row[@"Branch"] uppercaseString];
+    }
+    return @"EU";
+}
+
 static NSString *PortalValue(NSString *contents) {
     for (NSString *line in Lines(contents)) {
         NSString *trimmed = [line stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
@@ -131,8 +146,14 @@ static NSString *ContentsWithPortal(NSString *contents, NSString *portal) {
         }
         contents = ContentsWithPortal(contents, self.portal);
     } else {
-        if (!self.originalPortal || !exists) return YES;
-        contents = ContentsWithPortal(contents, self.originalPortal);
+        if (!exists) return YES;
+        NSString *portal = self.originalPortal;
+        // The beta default was "test"; the release client's normal portal is
+        // its Battle.net region (EU/US/KR/TW). Do not restore beta sentinels.
+        if (!portal.length || [portal isEqualToString:@"test"])
+            portal = DefaultPortalForDirectory(directory);
+        if (!portal.length) return YES;
+        contents = ContentsWithPortal(contents, portal);
         self.originalPortal = nil;
         if (![self save:error]) return NO;
     }

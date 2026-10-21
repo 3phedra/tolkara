@@ -5,11 +5,11 @@
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         if (argc!=4 && argc!=6) {
-            fprintf(stderr,"Usage: wow_cdn PRODUCT REGION OUTPUT_DIRECTORY [--stage INSTALL_PATH]\n");
+            fprintf(stderr,"Usage: wow_cdn PRODUCT REGION OUTPUT_DIRECTORY [--stage INSTALL_PATH | --stage-all OUTPUT_TREE]\n");
             return 2;
         }
         NSString *product=@(argv[1]), *region=@(argv[2]), *directory=@(argv[3]);
-        if (argc==6 && strcmp(argv[4],"--stage")) return 2;
+        if (argc==6 && strcmp(argv[4],"--stage") && strcmp(argv[4],"--stage-all")) return 2;
         TKWoWClient *client=[TKWoWClient new]; NSError *error=nil;
         NSDictionary *plan=[client planForProduct:product region:region locale:@"enUS" error:&error];
         if (!plan) { fprintf(stderr,"%s\n",error.localizedDescription.UTF8String); return 1; }
@@ -23,7 +23,17 @@ int main(int argc, const char *argv[]) {
         printf("Verified %s %s: %lu macOS install files, %llu bytes (excludes CASC game data).\n",
             product.UTF8String,[plan[@"version"][@"VersionsName"] UTF8String],(unsigned long)[plan[@"files"] count],
             [plan[@"installFileBytes"] unsignedLongLongValue]); fflush(stdout);
-        if (argc==6) {
+        if (argc==6 && strcmp(argv[4],"--stage-all")==0) {
+            NSString *output=@(argv[5]);
+            if (![NSFileManager.defaultManager createDirectoryAtPath:output withIntermediateDirectories:YES attributes:nil error:&error]) {
+                fprintf(stderr,"%s\n",error.localizedDescription.UTF8String); return 1;
+            }
+            printf("Downloading %lu macOS install files into %s.\n",(unsigned long)[plan[@"files"] count],output.UTF8String); fflush(stdout);
+            if (![client stageFiles:plan[@"files"] plan:plan directory:directory output:output error:&error]) {
+                fprintf(stderr,"%s\n",error.localizedDescription.UTF8String); return 1;
+            }
+            printf("Verified macOS install tree saved to %s\n",output.UTF8String);
+        } else if (argc==6) {
             NSDictionary *selected=nil;
             for (NSDictionary *file in plan[@"files"]) if ([file[@"path"] isEqualToString:@(argv[5])]) selected=file;
             if (!selected) { fprintf(stderr,"Requested file is absent from the macOS plan.\n"); return 1; }

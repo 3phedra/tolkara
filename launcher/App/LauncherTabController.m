@@ -408,7 +408,7 @@ static const CGFloat TKHeaderContentHeight = TKHeaderBrandHeight + TKHeaderStrip
 }
 
 - (UIColor *)colorForProduct:(NSString *)product {
-    if ([product isEqualToString:@"wow_classic_beta"]) return [UIColor colorWithRed:0.72 green:0.55 blue:0.20 alpha:1];
+    if ([product isEqualToString:@"wowf"] || [product isEqualToString:@"wow_classic_beta"]) return [UIColor colorWithRed:0.72 green:0.55 blue:0.20 alpha:1];
     if ([product isEqualToString:@"wow_classic_era"]) return [UIColor colorWithRed:0.24 green:0.44 blue:0.28 alpha:1];
     if ([product isEqualToString:@"wow_classic"]) return [UIColor colorWithRed:0.42 green:0.30 blue:0.20 alpha:1];
     if ([product isEqualToString:@"wow_beta"]) return [UIColor colorWithRed:0.36 green:0.24 blue:0.52 alpha:1];
@@ -416,6 +416,7 @@ static const CGFloat TKHeaderContentHeight = TKHeaderBrandHeight + TKHeaderStrip
 }
 
 - (NSString *)initialsForProduct:(NSString *)product {
+    if ([product isEqualToString:@"wowf"]) return @"F";
     if ([product isEqualToString:@"wow_classic_beta"]) return @"FB";
     if ([product isEqualToString:@"wow_classic_era"]) return @"CE";
     if ([product isEqualToString:@"wow_classic"]) return @"C";
@@ -463,7 +464,8 @@ static const CGFloat TKHeaderContentHeight = TKHeaderBrandHeight + TKHeaderStrip
 - (void)updateHeaderState {
     [self updateGameStripSelection];
     TKCustomServerConfig *config = [TKCustomServerConfig current];
-    BOOL on = [self.wow.product[@"id"] isEqualToString:@"wow_classic_beta"] && config.isUsable;
+    NSString *identifier=self.wow.product[@"id"];
+    BOOL on = ([identifier isEqualToString:@"wowf"] || [identifier isEqualToString:@"wow_classic_beta"]) && config.isUsable;
     [_customServerButton setTitle:on ? @"Custom Server" : @"Custom Server" forState:UIControlStateNormal];
     _customServerButton.tintColor = on ? TKLauncherTheme.gold : TKLauncherTheme.muted;
     _customServerButton.layer.borderWidth = on ? 1 : 0;

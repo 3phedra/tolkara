@@ -34,5 +34,9 @@ extern NSString *const TKWoWBackgroundSessionIdentifier;
 // Fetches the encoding manifest (can be large), with verified archive-range fallback.
 - (nullable NSString *)stageFile:(NSDictionary *)file plan:(NSDictionary *)plan
     directory:(NSString *)directory error:(NSError **)error;
+// Tool support: fetch every macOS install file in one plan and lay it out by
+// manifest path. Used to obtain the release app layer without Battle.net.
+- (BOOL)stageFiles:(NSArray<NSDictionary *> *)files plan:(NSDictionary *)plan
+    directory:(NSString *)directory output:(NSString *)output error:(NSError **)error;
 @end
 NS_ASSUME_NONNULL_END

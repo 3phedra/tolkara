@@ -70,7 +70,7 @@ static NSString *const TKSettingsCell = @"settings.cell";
     if (self.isViewLoaded && self.view.window) [self.tableView reloadData];
 }
 
-- (BOOL)isForever { return [self.wow.product[@"id"] isEqualToString:@"wow_classic_beta"]; }
+- (BOOL)isForever { NSString *identifier=self.wow.product[@"id"]; return [identifier isEqualToString:@"wowf"] || [identifier isEqualToString:@"wow_classic_beta"]; }
 - (BOOL)locked { return self.wow.isBusy || self.wow.isUpdating || self.wow.sessionUsed; }
 - (NSString *)editionName { return self.wow.product[@"name"] ?: @"—"; }
 - (NSString *)regionName {
@@ -87,7 +87,7 @@ static NSString *const TKSettingsCell = @"settings.cell";
 }
 - (NSString *)customServerName {
     TKCustomServerConfig *config = [TKCustomServerConfig current];
-    if (![self isForever]) return @"Forever beta only";
+    if (![self isForever]) return @"Forever only";
     return config.isUsable ? [NSString stringWithFormat:@"On · %@", config.portal] : @"Off";
 }
 

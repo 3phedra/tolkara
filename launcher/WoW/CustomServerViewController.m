@@ -89,7 +89,9 @@ static NSString *const TKCustomSwitchCellIdentifier = @"custom.switch";
         field.field.enabled = on;
         field.field.alpha = on ? 1 : 0.45;
     }
-    [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:0] withRowAnimation:UITableViewRowAnimationNone];
+    // Do not reload the section here: the switch is the accessory view of the
+    // cell being handled, and removing it during valueChanged can wedge the
+    // table. The footer is static, so only the field cells need updating.
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { (void)tableView; return 3; }
@@ -102,7 +104,7 @@ static NSString *const TKCustomSwitchCellIdentifier = @"custom.switch";
 }
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     (void)tableView;
-    if (section == 0) return self.enabled.isOn ? @"The portal is written to WTF/Config.wtf and the key is installed in the client's memory for this session. Restart the game after saving." : @"Custom server is off. The client uses its normal portal.";
+    if (section == 0) return @"Enabling writes the portal to WTF/Config.wtf and installs the key in the client's memory for this session. Disabling restores the normal portal. Restart the game after saving.";
     if (section == 1) return @"Enter the auth host, the server's 64-digit Ed25519 key, and the certificate group from 1 to 12. The key is public material; it replaces one trusted key in memory only.";
     return @"Only the Forever beta uses this setting. A game session must be closed before changing it.";
 }
