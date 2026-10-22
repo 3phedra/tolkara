@@ -16,6 +16,10 @@ NGStartupStep ng_startup_step(void);
 // compatibility runtime started from a profile. Copied; at most 64 of 4096
 // bytes. Call before ng_initialize; default: none.
 void ng_set_arguments(const char *const *arguments, size_t count);
+// Custom server: replace one certificate-store group key (the server's
+// Ed25519 public key, 64 hex digits) while the guest runs, and use `portal` to
+// notice the login attempt. Call before ng_initialize; default: off.
+bool ng_set_custom_server(const char *key_hex, unsigned group, const char *portal);
 // Host-only cleanup before a guest exits; never reads application memory.
 // Install before guest entry. A nonzero exit remains an error exit.
 typedef void (*NGExitObserver)(int code, void *context);

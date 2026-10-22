@@ -3,11 +3,29 @@
 #import "Images.h"
 #import "TextInput.h"
 #import "TouchControls.h"
+#import "TouchGamepad.h"
+#import "TouchGamepadLayout.h"
+#import "AKPerformanceOverlay.h"
 #import <GameController/GameController.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
 
 NSApplication *NSApp;
+
+// A non-finite frame, size or scale must never reach the guest: the UIKit
+// layout pass can hand one over while the scene is changing, and the game's
+// UI treats the values as geometry it can index with.
+static bool AKFiniteSize(NSSize size) {
+    return isfinite(size.width) && isfinite(size.height) && size.width >= 0 && size.height >= 0;
+}
+static bool AKFiniteRect(NSRect rect) {
+    return isfinite(rect.origin.x) && isfinite(rect.origin.y) && AKFiniteSize(rect.size);
+}
+static void AKRejectGeometry(const char *where, NSRect rect) {
+    static unsigned logged;
+    if (logged < 8) { logged++; AKLog(@"%s: rejected non-finite geometry %.17g,%.17g %.17gx%.17g", where,
+        rect.origin.x, rect.origin.y, rect.size.width, rect.size.height); }
+}
 
 #pragma mark - NSResponder
 
@@ -94,7 +112,11 @@ static NSPoint mouseScreenLocation;
 @implementation NSView { NSMutableArray<NSView *> *_subviews; NSMutableArray<NSDictionary *> *_cursorRects; NSMutableArray<NSTrackingArea *> *_trackingAreas; __weak NSView *_superview; }
 - (instancetype)init { return [self initWithFrame:CGRectZero]; }
 - (instancetype)initWithFrame:(NSRect)frame {
-    if ((self = [super init])) { _frame = frame; _bounds = (CGRect){CGPointZero, frame.size}; _subviews = [NSMutableArray new]; _cursorRects=[NSMutableArray new]; _trackingAreas=[NSMutableArray new]; _autoresizesSubviews=YES; }
+    if ((self = [super init])) {
+        if (!AKFiniteRect(frame)) { AKRejectGeometry("NSView initWithFrame", frame); frame = CGRectZero; }
+        _frame = frame; _bounds = (CGRect){CGPointZero, frame.size};
+        _subviews = [NSMutableArray new]; _cursorRects=[NSMutableArray new]; _trackingAreas=[NSMutableArray new]; _autoresizesSubviews=YES;
+    }
     return self;
 }
 - (CALayer *)makeBackingLayer { return [CALayer layer]; }
@@ -110,6 +132,7 @@ static NSPoint mouseScreenLocation;
 }
 - (void)setHidden:(BOOL)hidden { _hidden=hidden; _layer.hidden=hidden; }
 - (void)setFrame:(NSRect)f {
+    if (!AKFiniteRect(f)) { AKRejectGeometry("NSView setFrame", f); return; }
     NSSize oldSize=_bounds.size;
     _frame = f; _bounds.size = f.size;
     [CATransaction begin]; [CATransaction setDisableActions:YES];
@@ -138,7 +161,8 @@ static NSPoint mouseScreenLocation;
         view.frame=frame;
     }
 }
-- (void)setFrameSize:(NSSize)s { self.frame = (CGRect){_frame.origin, s}; }
+- (void)setFrameSize:(NSSize)s { if (!AKFiniteSize(s)) { AKRejectGeometry("NSView setFrameSize",(NSRect){_frame.origin,s}); return; } self.frame = (CGRect){_frame.origin, s}; }
+- (void)setBounds:(NSRect)b { if (!AKFiniteRect(b)) { AKRejectGeometry("NSView setBounds", b); return; } _bounds = b; }
 - (NSView *)superview { return _superview; }
 - (NSArray<NSView *> *)subviews { return [_subviews copy]; }
 - (void)addSubview:(NSView *)v {
@@ -277,11 +301,27 @@ NSEventModifierFlags AKModifiersReconciled(NSEventModifierFlags held, NSEventMod
 
 @interface AKHostView : UIView <UIPointerInteractionDelegate, AKTouchControlsDelegate>
 @property (nonatomic, weak) NSWindow *nsWindow;
+// The guest's first responder changed (NSWindow.makeFirstResponder:).
+- (void)guestFirstResponderChanged:(NSResponder *)responder;
 @end
+
+// Whether a responder is where typed text goes. Our NSResponder base class
+// forwards -insertText: up the chain, so only the two-argument NSTextInputClient
+// entry point, or an override of -insertText:, says "this is a text field".
+static BOOL AKResponderIsTextClient(NSResponder *responder) {
+    if (!responder) return NO;
+    if ([responder respondsToSelector:@selector(insertText:replacementRange:)]) return YES;
+    IMP forwarded = method_getImplementation(class_getInstanceMethod(NSResponder.class, @selector(insertText:)));
+    Method own = class_getInstanceMethod(object_getClass(responder), @selector(insertText:));
+    return own && method_getImplementation(own) != forwarded;
+}
 
 @implementation AKHostView { CGPoint _last; NSEventModifierFlags _mods; BOOL _pressedRight, _pressedLeft, _pointerInside, _softwareCursor; UIImageView *_cursorView; UIPointerInteraction *_pointer; UIPointerStyle *_gamePointerStyle; unsigned _hoverUpdates, _pointerUpdates, _cursorVisibilityReasons; NSTimeInterval _pointerReportTime; CGPoint _cursorHotSpot;
     AKTouchControls *_touchControls;
+    AKTouchGamepad *_touchGamepad;
+    AKPerformanceOverlay *_performanceOverlay;
     BOOL _touchCursorActive, _touchCursorInitialized, _pressedMiddle;
+    NSTimeInterval _lastTouchTime;
     NSTimeInterval _lastTouchClickTime;
     CGPoint _lastTouchClickPoint;
     unsigned _lastTouchButton;
@@ -315,18 +355,53 @@ NSEventModifierFlags AKModifiersReconciled(NSEventModifierFlags held, NSEventMod
     return self;
 }
 - (void)installTouchControls {
-    _touchControls = [[AKTouchControls alloc] initWithFrame:CGRectZero];
+    AKGamepadLayout *touchLayout = [[AKGamepadLayout alloc] initWithDefaults:NSUserDefaults.standardUserDefaults];
+    _touchControls = [[AKTouchControls alloc] initWithFrame:CGRectZero layout:touchLayout];
     _touchControls.delegate = self;
     _touchControls.translatesAutoresizingMaskIntoConstraints = NO;
     [self addSubview:_touchControls];
     [NSLayoutConstraint activateConstraints:@[
-        [_touchControls.widthAnchor constraintEqualToConstant:96],
+        [_touchControls.widthAnchor constraintEqualToConstant:200],
         [_touchControls.heightAnchor constraintEqualToConstant:44],
-        [_touchControls.trailingAnchor constraintEqualToAnchor:self.safeAreaLayoutGuide.trailingAnchor constant:-12],
-        [_touchControls.bottomAnchor constraintEqualToAnchor:self.keyboardLayoutGuide.topAnchor constant:-8],
+        [_touchControls.topAnchor constraintEqualToAnchor:self.safeAreaLayoutGuide.topAnchor constant:8],
+        [_touchControls.centerXAnchor constraintEqualToAnchor:self.safeAreaLayoutGuide.centerXAnchor],
     ]];
+    _performanceOverlay = [[AKPerformanceOverlay alloc] initWithFrame:CGRectZero];
+    _performanceOverlay.layer.zPosition = 90000;
+    [self addSubview:_performanceOverlay];
+    AKGamepadLayout *layout = [[AKGamepadLayout alloc] initWithDefaults:NSUserDefaults.standardUserDefaults];
+    _performanceOverlay.hidden = !layout.performanceOverlayEnabled;
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(performanceOverlayLayoutChanged:)
+        name:AKGamepadLayoutDidChangeNotification object:nil];
+    _touchGamepad = [[AKTouchGamepad alloc] initWithHostView:self layout:touchLayout];
+    __weak AKHostView *weakSelf = self;
+    _touchGamepad.toolbarEditingChanged = ^(BOOL editing) {
+        AKHostView *host = weakSelf;
+        [host->_touchControls setToolbarEditing:editing];
+    };
+    _touchGamepad.visibilityChanged = ^(BOOL visible) {
+        AKHostView *host = weakSelf;
+        if (!host) return;
+        [host->_touchControls cancelTouches];
+        [host->_touchControls setGamepadVisible:visible];
+    };
+    _touchGamepad.enabled = _touchControls.gamepadEnabled;
+    NSNumber *gamepadWithController=[NSUserDefaults.standardUserDefaults objectForKey:@"TKTouchGamepadWithController"];
+    _touchGamepad.showWithPhysicalController = gamepadWithController ? gamepadWithController.boolValue : NO;
     [self touchTrackpadChanged:_touchControls.trackpadEnabled];
 }
+- (void)performanceOverlayLayoutChanged:(NSNotification *)note {
+    (void)note;
+    AKGamepadLayout *layout = [[AKGamepadLayout alloc] initWithDefaults:NSUserDefaults.standardUserDefaults];
+    _performanceOverlay.hidden = !layout.performanceOverlayEnabled;
+}
+- (void)didMoveToWindow {
+    [super didMoveToWindow]; [_touchGamepad refresh];
+}
+- (BOOL)nativeControlsActive { return _touchControls.keyboardVisible || _touchGamepad.configuring; }
+- (void)touchKeyboardVisibilityChanged:(BOOL)visible { _touchGamepad.keyboardVisible = visible; }
+- (void)touchGamepadPreferenceChanged:(BOOL)enabled { _touchGamepad.enabled = enabled; }
+- (void)touchControlSettings { [_touchGamepad toggleSettings]; }
 - (BOOL)canBecomeFirstResponder { return YES; }
 - (void)setNsWindow:(NSWindow *)window {
     _nsWindow = window;
@@ -387,6 +462,41 @@ NSEventModifierFlags AKModifiersReconciled(NSEventModifierFlags held, NSEventMod
     event.timestamp = NSProcessInfo.processInfo.systemUptime;
     [NSApp postEvent:event atStart:NO];
 }
+// A tap on the touch trackpad is a direct touch: bring the pointer to the
+// touched spot first (so a game's hover sees it), then press, as the direct
+// touch path does. With the pointer captured by a hardware mouse the click
+// stays at the pointer: captured motion is relative and must not jump.
+- (void)touchTapAt:(CGPoint)point button:(unsigned)button {
+    if (button > 2) return;
+    _lastTouchTime = NSProcessInfo.processInfo.systemUptime;
+    [self activateTouchCursor];
+    if (![self usesRelativeMouse]) {
+        CGPoint clamped = CGPointMake(MAX(0, MIN(self.bounds.size.width - 1, point.x)),
+                                      MAX(0, MIN(self.bounds.size.height - 1, point.y)));
+        [self postMouse:NSEventTypeMouseMoved at:clamped button:0];
+    }
+    [self touchButton:button pressed:YES];
+    [self touchButton:button pressed:NO];
+}
+// A guest with a text client can need the on-screen keyboard (a login field).
+// Some games swap the first responder to the field itself; those get the
+// keyboard opened right away when a finger just touched. Games that keep one
+// text-capable responder for the whole session — World of Warcraft's engine
+// routes keys to its focused edit box itself — give no focus event, so for
+// them this is what puts the keyboard button on an iPad that never turned the
+// controls on, and the user opens the keyboard with it.
+- (void)guestFirstResponderChanged:(NSResponder *)responder {
+    BOOL text = AKResponderIsTextClient(responder);
+    static unsigned loggedResponders;
+    if (loggedResponders < 12) { loggedResponders++; AKLog(@"guest first responder=%@ text=%d", responder ? NSStringFromClass(object_getClass(responder)) : @"(none)", text); }
+    if (!text) return;
+    if (!_touchControls && ![AKTouchControls explicitlyDisabled]) [self installTouchControls];
+    if (GCKeyboard.coalescedKeyboard) return;
+    // Only a field the finger just touched opens the keyboard by itself: a
+    // game that focuses one on its own would otherwise cover the screen.
+    if (NSProcessInfo.processInfo.systemUptime - _lastTouchTime > 2.5) return;
+    [_touchControls showKeyboard];
+}
 - (void)touchButton:(unsigned)button pressed:(BOOL)pressed {
     if (button > 2) return;
     [self activateTouchCursor];
@@ -416,6 +526,14 @@ NSEventModifierFlags AKModifiersReconciled(NSEventModifierFlags held, NSEventMod
     AKEnumerateTextKeys(text, ^(NSString *characters, NSString *unmodified, unsigned short code, NSUInteger modifiers) {
         [self postTextKey:code characters:characters unmodified:unmodified modifiers:modifiers];
     });
+}
+- (void)touchReplaceText:(NSString *)text {
+    // macOS field editing through the same event queue as typed input. This
+    // is one explicit Replace action, with no clipboard, text query or Return.
+    // Command is carried on the A events only; it cannot stay held for typing.
+    [self postTextKey:0 characters:@"a" unmodified:@"a" modifiers:NSEventModifierFlagCommand];
+    [self touchSpecialKey:51 characters:@"\x7f"];
+    [self touchInsertText:text];
 }
 - (void)touchSpecialKey:(unsigned short)code characters:(NSString *)characters {
     [self postTextKey:code characters:characters unmodified:characters modifiers:0];
@@ -579,7 +697,7 @@ NSEventModifierFlags AKModifiersReconciled(NSEventModifierFlags held, NSEventMod
     CGPoint point=[g locationInView:self];
     [self moveHoverTo:point inside:CGRectContainsPoint(self.bounds,point)];
 }
-- (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
+- (void)dealloc { [_touchGamepad invalidate]; [NSNotificationCenter.defaultCenter removeObserver:self]; }
 static BOOL AKIsRight(UIEvent *ev) { return (ev.buttonMask & UIEventButtonMaskSecondary) != 0; }
 - (BOOL)handleTrackpadTouches:(NSSet<UITouch *> *)touches event:(UIEvent *)event {
     if (!_touchControls.trackpadEnabled) return NO;
@@ -592,7 +710,14 @@ static BOOL AKIsRight(UIEvent *ev) { return (ev.buttonMask & UIEventButtonMaskSe
 - (void)touchesBegan:(NSSet<UITouch *> *)t withEvent:(UIEvent *)ev {
     if ([self handleTrackpadTouches:t event:ev]) return;
     BOOL r = AKIsRight(ev);if(r?_pressedRight:_pressedLeft)return; _last = [t.anyObject locationInView:self];
+    _lastTouchTime = NSProcessInfo.processInfo.systemUptime;
     [self reconcileModifiers:AKMods(ev.modifierFlags)];
+    // The pointer arrives where the finger did before the button goes down. A
+    // game's hover state follows mouse-moved events (World of Warcraft's login
+    // buttons do), so without this a tap presses nothing until a drag has
+    // brought the pointer over the button first. The move's delta is zero: the
+    // location was already taken.
+    [self postMouse:NSEventTypeMouseMoved at:_last button:0];
     [self postMouse:r ? NSEventTypeRightMouseDown : NSEventTypeLeftMouseDown at:_last button:r];
 }
 - (void)touchesMoved:(NSSet<UITouch *> *)t withEvent:(UIEvent *)ev {
@@ -698,6 +823,7 @@ static void logLayer(CALayer *layer,unsigned depth) {
     if ((self = [super init])) { _contentRect = r; _styleMask=m; self.nextResponder = NSApp; _windowNumber = ++numbers; }
     return self;
 }
+- (BOOL)ak_nativeControlsActive { return [_host nativeControlsActive]; }
 // Visible windows, frontmost first: the window shown last is in front.
 + (NSArray<NSNumber *> *)windowNumbersWithOptions:(NSUInteger)options {
     (void)options;
@@ -719,9 +845,10 @@ static void logLayer(CALayer *layer,unsigned depth) {
 - (id)screen { return NSScreen.mainScreen; }
 - (BOOL)isMiniaturized { return NO; }
 - (void)invalidateCursorRectsForView:(NSView *)view { [view discardCursorRects]; [view resetCursorRects]; }
-- (void)setContentSize:(NSSize)size { _contentRect.size=size; [_contentView setFrameSize:size]; }
+- (void)setContentSize:(NSSize)size { if (!AKFiniteSize(size)) { AKRejectGeometry("NSWindow setContentSize",(NSRect){CGPointZero,size}); return; } _contentRect.size=size; [_contentView setFrameSize:size]; }
 - (void)setFrame:(NSRect)frame display:(BOOL)display animate:(BOOL)animate {
     (void)display; (void)animate;
+    if (!AKFiniteRect(frame)) { AKRejectGeometry("NSWindow setFrame", frame); return; }
     _contentRect=frame;
     // UIKit owns the scene's available geometry. Translate desktop sizing into
     // that viewport, and notify the guest of the actual content dimensions.
@@ -730,7 +857,10 @@ static void logLayer(CALayer *layer,unsigned depth) {
 }
 - (void)setFrame:(NSRect)frame display:(BOOL)display { [self setFrame:frame display:display animate:NO]; }
 - (NSRect)frame { return _host ? (CGRect){CGPointZero, _host.bounds.size} : _contentRect; }
-- (CGFloat)backingScaleFactor { return (_uiWindow.screen ?: UIScreen.mainScreen).nativeScale; }
+- (CGFloat)backingScaleFactor {
+    CGFloat scale=(_uiWindow.screen ?: UIScreen.mainScreen).nativeScale;
+    return isfinite(scale) && scale>0 ? scale : 1;
+}
 - (BOOL)isKeyWindow { return _uiWindow.isKeyWindow; }
 - (BOOL)isVisible { return _uiWindow && !_uiWindow.hidden; }
 - (NSUInteger)occlusionState { return self.isVisible && _uiWindow.windowScene.activationState!=UISceneActivationStateBackground ? 2 : 0; }
@@ -750,9 +880,9 @@ static void logLayer(CALayer *layer,unsigned depth) {
 - (NSRect)convertRectToScreen:(NSRect)rect { rect.origin=[self convertPointToScreen:rect.origin];return rect; }
 - (void)setCollectionBehavior:(NSUInteger)b { _collectionBehavior=b; }
 - (NSUInteger)collectionBehavior { return _collectionBehavior; }
-- (void)setMinSize:(NSSize)size { _contentMinSize=size; }   // frame and content sizes coincide here
+- (void)setMinSize:(NSSize)size { if (AKFiniteSize(size)) _contentMinSize=size; }   // frame and content sizes coincide here
 - (NSSize)minSize { return _contentMinSize; }
-- (void)setFrameOrigin:(NSPoint)origin { _contentRect.origin=origin; }
+- (void)setFrameOrigin:(NSPoint)origin { if (!isfinite(origin.x) || !isfinite(origin.y)) { AKRejectGeometry("NSWindow setFrameOrigin",(NSRect){origin,CGSizeZero}); return; } _contentRect.origin=origin; }
 - (NSRect)frameRectForContentRect:(NSRect)rect { return rect; }
 - (NSRect)contentRectForFrameRect:(NSRect)rect { return rect; }
 + (NSRect)frameRectForContentRect:(NSRect)rect styleMask:(NSUInteger)style { (void)style; return rect; }
@@ -762,6 +892,7 @@ static void logLayer(CALayer *layer,unsigned depth) {
     if (r && ![r acceptsFirstResponder]) return NO;
     [_firstResponder resignFirstResponder];
     _firstResponder = r; [r becomeFirstResponder];
+    [_host guestFirstResponderChanged:r];
     return YES;
 }
 - (void)setContentView:(NSView *)v {
@@ -776,6 +907,7 @@ static void logLayer(CALayer *layer,unsigned depth) {
 }
 - (void)ak_hostBoundsChanged:(CGRect)b {
     if (CGSizeEqualToSize(b.size, CGSizeZero)) return;
+    if (!AKFiniteSize(b.size)) { AKRejectGeometry("ak_hostBoundsChanged", b); return; }
     // As AppKit: the view may keep its own scale, as Wine's does when it draws
     // one pixel a point.
     CALayer *layer = _contentView.layer; CGFloat scale = self.backingScaleFactor;
@@ -881,7 +1013,9 @@ static void logLayer(CALayer *layer,unsigned depth) {
 
 #pragma mark - NSApplication
 
-@implementation NSApplication { NSMutableArray<NSEvent *> *_queue; NSMutableArray<NSWindow *> *_windows; NSEvent *_currentEvent; BOOL _launched, _inRun, _active, _terminating, _terminationPending, _terminationApproved; }
+@implementation NSApplication { NSMutableArray<NSEvent *> *_queue; NSMutableArray<NSWindow *> *_windows; NSEvent *_currentEvent; BOOL _launched, _inRun, _active, _terminating, _terminationPending, _terminationApproved;
+    CFTimeInterval _lastUIKitPump, _lastTrackingPump;
+}
 + (NSApplication *)sharedApplication {
     if (NSApp) return NSApp; // Super init publishes the singleton before subclass init callbacks.
     static dispatch_once_t once;
@@ -926,13 +1060,35 @@ static void logLayer(CALayer *layer,unsigned depth) {
 // timer callout on the UIKit main thread. We never return; we pump the same
 // run loop re-entrantly, which keeps UIKit, CADisplayLink, timers and the main
 // dispatch queue alive underneath the guest's stack frame.
+- (void)ak_pumpUIKitFor:(NSTimeInterval)seconds returnAfterSource:(BOOL)once {
+    // Set the budget before calling out too: a UIKit callback may inspect the
+    // guest queue. A genuinely nested guest loop must still be able to pump.
+    _lastUIKitPump = CACurrentMediaTime();
+    // The desktop loop normally asks only for the default mode. Native text
+    // selection, scrolling and controls also schedule work in UIKit's tracking
+    // mode. Give it a bounded turn while our native editor/settings are open;
+    // never run the common-modes pseudo-mode or depend on a system-edge gesture.
+    if (NSThread.isMainThread && [self.keyWindow ak_nativeControlsActive] &&
+        _lastUIKitPump - _lastTrackingPump >= 1.0 / 120.0) {
+        _lastTrackingPump = _lastUIKitPump;
+        CFRunLoopRunInMode((__bridge CFStringRef)UITrackingRunLoopMode, 0, false);
+        _lastTrackingPump = CACurrentMediaTime();
+    }
+    CFRunLoopRunInMode(kCFRunLoopDefaultMode, seconds, once);
+    // The outer UIKit loop never regains control while the guest runs. Publish
+    // pending native control/layout changes after the input callback returns,
+    // including when the inner loop exited early after handling a source.
+    // flush preserves any explicit transaction owned by a caller.
+    if (NSThread.isMainThread) [CATransaction flush];
+    _lastUIKitPump = CACurrentMediaTime();
+}
 - (void)run {
     [self finishLaunching];
     _running = YES; _inRun = YES;
     AKLog(@"-[NSApplication run]: pumping main run loop re-entrantly");
     while (_running) {
         @autoreleasepool {
-            [NSRunLoop.currentRunLoop runMode:NSDefaultRunLoopMode beforeDate:NSDate.distantFuture];
+            [self ak_pumpUIKitFor:0.25 returnAfterSource:YES];
             [self ak_drain];
         }
     }
@@ -986,6 +1142,15 @@ static void logLayer(CALayer *layer,unsigned depth) {
         diagnostics++; nextDiagnostic=now+15; [self.keyWindow ak_logLayers];
     }
     for (BOOL pumped = NO;; pumped = YES) {
+        // A busy guest queue used to bypass UIKit indefinitely. Give native
+        // controls a bounded turn at most once per 1/120 s even while events
+        // remain queued. Do this before inspecting the queue: UIKit callbacks
+        // can post/remove events. Preserve mask/dequeue/atStart semantics.
+        if (_queue.count && NSThread.isMainThread &&
+            CACurrentMediaTime() - _lastUIKitPump >= 1.0 / 120.0) {
+            [self ak_pumpUIKitFor:0.001 returnAfterSource:NO];
+            pumped = YES;
+        }
         for (NSUInteger i = 0; i < _queue.count; i++) {
             NSEvent *e = _queue[i];
             if (mask & (1ULL << e.type)) {
@@ -1005,8 +1170,8 @@ static void logLayer(CALayer *layer,unsigned depth) {
         // A zero-duration poll can starve UIKit's deferred gesture/key work
         // when the desktop loop polls continuously. Allow a short complete
         // UIKit turn for nonblocking polls; blocking polls still wake on input.
-        if(left<=0) CFRunLoopRunInMode(kCFRunLoopDefaultMode,.001,false);
-        else CFRunLoopRunInMode(kCFRunLoopDefaultMode,MIN(left,.25),true);
+        if(left<=0) [self ak_pumpUIKitFor:0.001 returnAfterSource:NO];
+        else [self ak_pumpUIKitFor:MIN(left,.25) returnAfterSource:YES];
     }
 }
 @end
@@ -1016,3 +1181,45 @@ int NSApplicationMain(int argc, const char *argv[]) {
     [[NSApplication sharedApplication] run];
     return 0;
 }
+
+#pragma mark - NSWorkspace
+
+// The client hands the Battle.net account/web-login challenge to the system
+// browser (on macOS, NSWorkspace). On the iPad the same hand-off must open
+// Safari so the user can finish the login there.
+@implementation NSWorkspace
++ (NSWorkspace *)sharedWorkspace {
+    static NSWorkspace *shared;
+    static dispatch_once_t once;
+    dispatch_once(&once,^{ shared=[NSWorkspace new]; });
+    return shared;
+}
+- (NSNotificationCenter *)notificationCenter {
+    // The game observes workspace notifications (application activation).
+    // This center is private to the app: observers register and simply never
+    // receive workspace events on the iPad.
+    static NSNotificationCenter *center;
+    static dispatch_once_t once;
+    dispatch_once(&once,^{ center=[NSNotificationCenter new]; });
+    return center;
+}
+- (BOOL)openURL:(NSURL *)url {
+    if(![url isKindOfClass:NSURL.class] || !url.scheme.length) return NO;
+    NSString *scheme=url.scheme.lowercaseString;
+    if(![scheme isEqualToString:@"http"] && ![scheme isEqualToString:@"https"]) {
+        AKLog(@"NSWorkspace cannot open a %@ link on the iPad",scheme); return NO;
+    }
+    dispatch_async(dispatch_get_main_queue(),^{
+        [UIApplication.sharedApplication openURL:url options:@{} completionHandler:nil];
+    });
+    AKLog(@"NSWorkspace opened a %@ page in the system browser",url.host?:scheme);
+    return YES;
+}
+- (BOOL)openURL:(NSURL *)url options:(NSUInteger)options configuration:(NSDictionary *)configuration error:(NSError **)error {
+    (void)options; (void)configuration;
+    if([self openURL:url]) return YES;
+    if(error) *error=[NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorBadURL userInfo:nil];
+    return NO;
+}
+- (BOOL)openFile:(NSString *)path { (void)path; return NO; }
+@end

@@ -3,12 +3,17 @@
 // mode, and offers development checks in a separate Diagnostics menu.
 #import <UIKit/UIKit.h>
 #import "AppLibrary.h"
+#import "ControllerProbe.h"
 #import "Diagnostics.h"
 #import "DiagnosticsViewController.h"
+#import "LauncherTabController.h"
 #import "ExecutionMode.h"
 #import "LibraryViewController.h"
+#import "../WoW/WoWViewController.h"
+#import "../WoW/Client.h"
 #import "LaunchProgressView.h"
 #import "NativeGuest.h"
+#import "CustomServerConfig.h"
 #import "SignedFileProbe.h"
 #import "StartupActivity.h"
 #import "../Cloud/SteamCloudCoordinator.h"
@@ -31,6 +36,8 @@
 @property(nonatomic, strong) UIButton *diagnosticsButton;
 @property(nonatomic, strong) UINavigationController *navigation;
 @property(nonatomic, strong) TKLibraryViewController *libraryController;
+@property(nonatomic, strong) TKWoWViewController *wowController;
+@property(nonatomic, strong) TKLauncherTabController *tabController;
 @property(nonatomic, strong) TKAppLibrary *library;
 @property(nonatomic, strong, nullable) TKApp *launchingApp;
 @property(nonatomic, strong) TKSteamCloudCoordinator *steamCloud;
@@ -52,6 +59,7 @@
 @property(nonatomic,strong) TKLocalAuthorization *localAuthorization;
 // A development run's startup kind, kept while this iPad's Developer service prepares.
 @property(nonatomic) BOOL nativeFullStartup;
+@property(nonatomic) BOOL waitedForLocalService;
 #endif
 @end
 
@@ -112,9 +120,9 @@ static BOOL PreparedFromOutside(void) { return hd_may_run_unsigned_code() || ng_
     [super viewDidLoad];
     self.view.backgroundColor=UIColor.systemBackgroundColor;
     UILabel *title=[UILabel new], *line=[UILabel new];
-    title.text=[NSString stringWithFormat:@"How should Tolkara run %@?",_app];
+    title.text=[NSString stringWithFormat:@"Startup options for %@",_app];
     title.font=[UIFont preferredFontForTextStyle:UIFontTextStyleTitle1];
-    line.text=@"Choose one. You can change it later with Execution mode.";
+    line.text=@"Choose how to start. You can change this later in Settings.";
     line.font=[UIFont preferredFontForTextStyle:UIFontTextStyleBody];
     line.textColor=UIColor.secondaryLabelColor;
     for (UILabel *label in @[title,line]) { label.numberOfLines=0; label.adjustsFontForContentSizeCategory=YES; }
@@ -192,7 +200,8 @@ static BOOL PreparedFromOutside(void) { return hd_may_run_unsigned_code() || ng_
     if (started) return;
     started = YES;
     NSArray<NSString *> *arguments=NSProcessInfo.processInfo.arguments;
-    // --execution-mode=<id> > saved choice > TOLKARA_MODE preselection > ask.
+    // Resolve the execution mode: explicit launch arguments, then the saved
+    // choice, then the build's preselection.
     NSString *source=nil;
     NSString *saveProblem=nil;
     if(TKExecutionModeApplySaveArgument(arguments,NSUserDefaults.standardUserDefaults,&saveProblem))
@@ -205,6 +214,7 @@ static BOOL PreparedFromOutside(void) { return hd_may_run_unsigned_code() || ng_
     // can receive containers (tools/install.sh launches once if needed).
     if (self.executionMode==TKExecutionModeLocalSigning) PrepareLocalSigningFolder();
     self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
+    self.window.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
     [self reserveExecutableMemory];
     self.library = OpenLibrary();
 #if TOLKARA_INTEGRATED_AUTH
@@ -214,13 +224,16 @@ static BOOL PreparedFromOutside(void) { return hd_may_run_unsigned_code() || ng_
         name:TKLocalArenaWillPrepare object:nil];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(arenaDidPrepare:)
         name:TKLocalArenaDidPrepare object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(localServiceWaiting:)
+        name:TKLocalServiceWaiting object:nil];
 #endif
-    // A plain launch (no arguments, or a mode choice with optional explicit save)
-    // shows the app library. Any other launch is a development run from
+    // A plain launch (no arguments, or only a per-launch --execution-mode)
+    // shows the WoW home. Any other launch is a development run from
     // tools/: keep its plain status screen and behaviour.
     BOOL plain=YES;
     for(NSUInteger i=1;i<arguments.count;i++) if(![arguments[i] hasPrefix:TKExecutionModeArgumentPrefix] &&
-        ![arguments[i] isEqualToString:TKExecutionModeSaveArgument]) plain=NO;
+        ![arguments[i] isEqualToString:TKExecutionModeSaveArgument] &&
+        ![arguments[i] isEqualToString:@"--sample-native"]) plain=NO;
     if (plain) {
         self.uiSession=YES;
         self.libraryController=[[TKLibraryViewController alloc] initWithLibrary:self.library];
@@ -228,10 +241,23 @@ static BOOL PreparedFromOutside(void) { return hd_may_run_unsigned_code() || ng_
         // An unusable per-launch mode or preselection never falls back; say so.
         if (TKExecutionModeSourceIsInvalid(source))
             self.libraryController.notice=[NSString stringWithFormat:@"Execution mode not set: %@. Choose one with Execution Mode before starting an app.",source];
-        self.navigation=[[UINavigationController alloc] initWithRootViewController:self.libraryController];
-        self.window.rootViewController=self.navigation;
+        self.wowController=[[TKWoWViewController alloc] initWithLibrary:self.library];
+        self.wowController.executionMode=self.executionMode;
+        __weak AKHostSceneDelegate *weakSelf=self;
+        self.wowController.startApp=^(TKApp *app) {
+            AKHostSceneDelegate *host=weakSelf;
+            [host libraryViewController:host.libraryController startApp:app];
+        };
+        self.wowController.showDiagnostics=^{ [weakSelf showDiagnostics]; };
+        TKLauncherTabController *tabs=[[TKLauncherTabController alloc] initWithWoWController:self.wowController
+            libraryController:self.libraryController];
+        tabs.showDiagnostics=^{ [weakSelf showDiagnostics]; };
+        tabs.showExecutionMode=^{ [weakSelf changeExecutionMode]; };
+        self.tabController=tabs;
+        self.navigation=tabs.playNavigation;
+        self.window.rootViewController=tabs;
         [self.window makeKeyAndVisible];
-        [self performSelector:@selector(askExecutionModeIfNeeded) withObject:nil afterDelay:0];
+        // The public home has one startup route and no execution-mode chooser.
         return;
     }
     self.window.rootViewController = [self statusController];
@@ -281,6 +307,16 @@ static BOOL PreparedFromOutside(void) { return hd_may_run_unsigned_code() || ng_
 // this process can no longer start an app.
 - (void)showStatusScreen {
     if (!self.navigation) return;
+    [self.tabController selectPlayTab];
+    [self.navigation popToRootViewControllerAnimated:NO];
+    if (self.wowController) {
+        [self.wowController beginStartup];
+        self.status=self.wowController.startupStatusLabel;
+        self.launchProgress=self.wowController.launchProgress;
+        self.startupActivity=nil; // Technical activity remains available in logs.
+        self.diagnosticsButton=self.wowController.diagnosticsButton;
+        return;
+    }
     UIViewController *controller=[self statusController];
     controller.navigationItem.hidesBackButton=YES;
     [self.navigation setNavigationBarHidden:YES animated:NO];
@@ -290,32 +326,27 @@ static BOOL PreparedFromOutside(void) { return hd_may_run_unsigned_code() || ng_
     [self.launchProgress stop];
     [self stopStartupActivity];
     self.diagnosticsButton.hidden=NO;
+    if (self.wowController) [self.wowController finishStartupWithMessage:self.status.text failed:YES];
     UIApplication.sharedApplication.idleTimerDisabled=NO;
 }
 - (void)endSession:(NSString *)reason {
     self.sessionUsed=YES;
     self.libraryController.notice=reason;
+    self.wowController.sessionUsed=YES;
 }
 
 #pragma mark Execution mode
 
-// First launch with no chosen, saved or preselected mode: ask before any app
-// starts; the choice cannot be skipped. TolkaraDiagnostics asks only when an
-// app starts.
-- (void)askExecutionModeIfNeeded {
-#if TOLKARA_INTEGRATED_AUTH
-    if (!self.executionMode) [self chooseExecutionMode:NO forApp:nil];
-#endif
-}
 // The mode chooser over whatever is showing. When app is given, its start
 // continues once the mode is chosen.
 - (void)chooseExecutionMode:(BOOL)cancellable forApp:(TKApp *)app {
     if ([self.window.rootViewController.presentedViewController isKindOfClass:TKExecutionModeChooser.class]) return;
     __weak AKHostSceneDelegate *weakSelf=self;
-    TKExecutionModeChooser *chooser=[[TKExecutionModeChooser alloc] initWithApp:app.name?:@"your apps"
+    TKExecutionModeChooser *chooser=[[TKExecutionModeChooser alloc] initWithApp:app.name?:@"the game"
         current:self.executionMode cancellable:cancellable chosen:^(TKExecutionMode mode) {
         TKExecutionModeSave(NSUserDefaults.standardUserDefaults,mode);
         weakSelf.executionMode=mode;weakSelf.executionModeSource=@"chosen";
+        weakSelf.wowController.executionMode=mode;
         fprintf(stderr,"[host] execution mode=%s source=chosen\n",ModeIdentifier(mode));
         weakSelf.libraryController.notice=nil;
         if (mode==TKExecutionModeLocalSigning) PrepareLocalSigningFolder();
@@ -366,7 +397,7 @@ static BOOL PreparedFromOutside(void) { return hd_may_run_unsigned_code() || ng_
     (void)controller;
     TKReportViewController *report=[[TKReportViewController alloc] initWithTitle:app.name file:nil];
     report.text=@"Checking the loader… No app code is run.";
-    [self.navigation pushViewController:report animated:YES];
+    [controller.navigationController pushViewController:report animated:YES];
     NSError *error=nil;
     NSString *path=[self.library executablePathForApp:app error:&error];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{
@@ -394,7 +425,7 @@ static BOOL PreparedFromOutside(void) { return hd_may_run_unsigned_code() || ng_
     TKDiagnosticsViewController *diagnostics=[[TKDiagnosticsViewController alloc] initWithSections:[self diagnosticSections]];
     __weak AKHostSceneDelegate *weakSelf=self;
     diagnostics.sessionEnding=^{
-        [weakSelf endSession:@"A diagnostic test ran in this session. Close Tolkara in the app switcher and open it again before starting an app."];
+        [weakSelf endSession:@"A diagnostic test ran in this session. Close this app in the app switcher and open it again before starting an app."];
     };
     if (self.navigation && self.window.rootViewController==self.navigation) {
         [self.navigation setNavigationBarHidden:NO animated:YES];
@@ -409,6 +440,10 @@ static BOOL PreparedFromOutside(void) { return hd_may_run_unsigned_code() || ng_
 - (NSArray<TKDiagnosticSection *> *)diagnosticSections {
     NSMutableArray *sections=[NSMutableArray new];
     TKAppLibrary *library=self.library;
+    // Run from a timer callout, as at launch: these block the main thread.
+    void (^onMainRunLoop)(dispatch_block_t)=^(dispatch_block_t block) {
+        [NSTimer scheduledTimerWithTimeInterval:0.3 repeats:NO block:^(NSTimer *timer) { (void)timer; block(); }];
+    };
     [sections addObject:[TKDiagnosticSection sectionWithTitle:@"Runtime" footer:@"These checks run only Tolkara's own code." items:@[
         [TKDiagnostic diagnosticWithTitle:@"Host diagnostics" detail:@"Debugger, code signing, memory and the arena limit. No probe sample runs." run:^(TKDiagnosticReport report) {
             report(TKHostDiagnosticsReport(),YES);
@@ -435,6 +470,9 @@ static BOOL PreparedFromOutside(void) { return hd_may_run_unsigned_code() || ng_
         [TKDiagnostic diagnosticWithTitle:@"Captured shaders" detail:@"Compiles every shader library a game left in Documents/ShaderRequests on this iPad." run:^(TKDiagnosticReport report) {
             dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{ report(TKCapturedShaderProbeReport(),YES); });
         }],
+        [TKDiagnostic diagnosticWithTitle:@"Controller input" detail:@"What the iPad's GameController framework delivers here; press buttons on a paired controller for 10 seconds." run:^(TKDiagnosticReport report) {
+            onMainRunLoop(^{ report(TKControllerProbeReport(),YES); });
+        }],
     ]]];
 #if TOLKARA_INTEGRATED_AUTH
     TKLocalAuthorization *authorization=self.localAuthorization;
@@ -459,13 +497,9 @@ static BOOL PreparedFromOutside(void) { return hd_may_run_unsigned_code() || ng_
     ]]];
 #endif
     TKDiagnostic *(^endsSession)(TKDiagnostic *)=^(TKDiagnostic *diagnostic) { diagnostic.endsSession=YES; return diagnostic; };
-    // Run from a timer callout, as at launch: these block the main thread.
-    void (^onMainRunLoop)(dispatch_block_t)=^(dispatch_block_t block) {
-        [NSTimer scheduledTimerWithTimeInterval:0.3 repeats:NO block:^(NSTimer *timer) { (void)timer; block(); }];
-    };
     NSArray<NSString *> *arguments=NSProcessInfo.processInfo.arguments;
     [sections addObject:[TKDiagnosticSection sectionWithTitle:@"Session-ending tests"
-        footer:@"These execute host-generated code or load compatibility libraries, and the system may close Tolkara. Reopen Tolkara before starting an app." items:@[
+        footer:@"These execute host-generated code or load compatibility libraries, and the system may close Tolkara. Reopen the app before starting an app." items:@[
         endsSession([TKDiagnostic diagnosticWithTitle:@"Execution: RW → RX" detail:@"Tolkara's two-instruction sample." run:^(TKDiagnosticReport report) {
             onMainRunLoop(^{ report(TKExecutionProbeReport(HP_WRITE_THEN_EXECUTE,arguments),YES); });
         }]),
@@ -489,7 +523,7 @@ static BOOL PreparedFromOutside(void) { return hd_may_run_unsigned_code() || ng_
 // before any application code runs.
 - (void)launchLocalApp:(TKApp *)app {
     if(self.sessionUsed) {
-        [self alert:@"Reopen Tolkara" message:@"Only one app can start per session. Close Tolkara in the app switcher and open it again."];
+        [self alert:@"Reopen the app" message:@"Only one app can start per session. Close this app in the app switcher and open it again."];
         return;
     }
     NSError *error=nil;
@@ -499,7 +533,7 @@ static BOOL PreparedFromOutside(void) { return hd_may_run_unsigned_code() || ng_
         else self.status.text=message;
         return;
     }
-    [self endSession:[NSString stringWithFormat:@"%@ was started in this session. Close Tolkara in the app switcher and open it again to start an app.",app.name]];
+    [self endSession:[NSString stringWithFormat:@"%@ was started in this session. Close this app in the app switcher and open it again to start an app.",app.name]];
     self.launchingApp=app;
     [self.library recordLaunchOfApp:app error:NULL];
     [self showStatusScreen];
@@ -509,7 +543,7 @@ static BOOL PreparedFromOutside(void) { return hd_may_run_unsigned_code() || ng_
     if([NSProcessInfo.processInfo.arguments containsObject:@"--local-shaders-only"])
         setenv("TOLKARA_LOCAL_SHADERS_ONLY","1",1);
     UIApplication.sharedApplication.idleTimerDisabled=YES;
-    self.status.text=[NSString stringWithFormat:@"Preparing %@\nConnecting to the developer service…",app.name];
+    self.status.text=@"Connecting to the startup service…";
     [self.launchProgress start];
     [self.localAuthorization startAndPrepareLocalAuthorization:^(NSString *report) {
         [report writeToFile:TKDocumentsPath(@"local-game-setup.txt") atomically:YES encoding:NSUTF8StringEncoding error:NULL];
@@ -517,7 +551,7 @@ static BOOL PreparedFromOutside(void) { return hd_may_run_unsigned_code() || ng_
             self.status.text=[@"Local launch could not prepare. Close and reopen the app to retry.\n" stringByAppendingString:report];
             [self showStartStopped];return;
         }
-        self.status.text=[NSString stringWithFormat:@"Starting %@…\nKeep Tolkara open.",app.name];
+        self.status.text=@"Loading the game. Keep this app open.";
         // Guest main must enter from a timer callout, never a dispatch block.
         [self performSelector:@selector(startLocalGame) withObject:nil afterDelay:0];
     }];
@@ -529,7 +563,7 @@ static BOOL PreparedFromOutside(void) { return hd_may_run_unsigned_code() || ng_
 // stays usable and the library remains in front.
 - (void)launchLocalSigningApp:(TKApp *)app {
     if(self.sessionUsed) {
-        [self alert:@"Reopen Tolkara" message:@"Only one app can start per session. Close Tolkara in the app switcher and open it again."];
+        [self alert:@"Reopen the app" message:@"Only one app can start per session. Close this app in the app switcher and open it again."];
         return;
     }
     NSError *error=nil;
@@ -539,6 +573,7 @@ static BOOL PreparedFromOutside(void) { return hd_may_run_unsigned_code() || ng_
     }
     // The container is named after the executable's current SHA-256; hashing
     // it is slow, so look for the container off the main thread.
+    if (self.wowController) [self.wowController beginStartup];
     self.libraryController.navigationItem.prompt=[NSString stringWithFormat:@"Preparing %@…",app.name];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{
         NSString *sha=[self.library currentSHA256OfApp:app error:NULL];
@@ -546,22 +581,23 @@ static BOOL PreparedFromOutside(void) { return hd_may_run_unsigned_code() || ng_
         dispatch_async(dispatch_get_main_queue(),^{
             self.libraryController.navigationItem.prompt=nil;
             if(self.sessionUsed) {
-                [self alert:@"Reopen Tolkara" message:@"Only one app can start per session. Close Tolkara in the app switcher and open it again."];
+                [self alert:@"Reopen the app" message:@"Only one app can start per session. Close this app in the app switcher and open it again."];
                 return;
             }
             if(!container) {
                 PrepareLocalSigningFolder();
+                [self.wowController finishStartupWithMessage:LocalSigningNeeds(sha?:app.sha256) failed:YES];
                 [self alert:@"Page Container Needed" message:LocalSigningNeeds(sha?:app.sha256)];
                 return;
             }
-            [self endSession:[NSString stringWithFormat:@"%@ was started in this session. Close Tolkara in the app switcher and open it again to start an app.",app.name]];
+            [self endSession:[NSString stringWithFormat:@"%@ was started in this session. Close this app in the app switcher and open it again to start an app.",app.name]];
             self.launchingApp=app;
             [self.library recordLaunchOfApp:app error:NULL];
             [self showStatusScreen];
             // As for Developer service: an uncached shader waits instead of failing.
             setenv("TOLKARA_WAIT_FOR_MISSING_SHADERS","1",1);
             UIApplication.sharedApplication.idleTimerDisabled=YES;
-            self.status.text=[NSString stringWithFormat:@"Starting %@…\nKeep Tolkara open.",app.name];
+            self.status.text=@"Loading the game. Keep this app open.";
             // Guest main must enter from a timer callout, never a dispatch block.
             [self performSelector:@selector(startSignedGame:) withObject:container afterDelay:0];
         });
@@ -571,7 +607,7 @@ static BOOL PreparedFromOutside(void) { return hd_may_run_unsigned_code() || ng_
 // External JIT: a tool outside the app prepares memory.
 - (void)launchExternalJITApp:(TKApp *)app {
     if(self.sessionUsed) {
-        [self alert:@"Reopen Tolkara" message:@"Only one app can start per session. Close Tolkara in the app switcher and open it again."];
+        [self alert:@"Reopen the app" message:@"Only one app can start per session. Close this app in the app switcher and open it again."];
         return;
     }
     NSError *error=nil;
@@ -581,18 +617,18 @@ static BOOL PreparedFromOutside(void) { return hd_may_run_unsigned_code() || ng_
     }
     // Opened without JIT: say so; the session stays usable.
     if(!PreparedFromOutside()) {
-        [self alert:@"JIT Not Enabled" message:@"Tolkara was opened without JIT. Enable JIT for it with the tool you sideloaded it with "
+        [self alert:@"JIT Not Enabled" message:@"This app was opened without JIT. Enable JIT with your sideloading tool "
             "(such as SideStore) or a JIT enabler such as StikDebug, then open it again."];
         return;
     }
-    [self endSession:[NSString stringWithFormat:@"%@ was started in this session. Close Tolkara in the app switcher and open it again to start an app.",app.name]];
+    [self endSession:[NSString stringWithFormat:@"%@ was started in this session. Close this app in the app switcher and open it again to start an app.",app.name]];
     self.launchingApp=app;
     [self.library recordLaunchOfApp:app error:NULL];
     [self showStatusScreen];
     // An uncached shader waits instead of failing.
     setenv("TOLKARA_WAIT_FOR_MISSING_SHADERS","1",1);
     UIApplication.sharedApplication.idleTimerDisabled=YES;
-    self.status.text=[NSString stringWithFormat:@"Starting %@…\nKeep Tolkara open.",app.name];
+    self.status.text=@"Loading the game. Keep this app open.";
     // Enter from a timer callout, never a dispatch block.
     [self performSelector:@selector(startExternalJITGame) withObject:nil afterDelay:0];
 }
@@ -693,16 +729,27 @@ static BOOL PreparedFromOutside(void) { return hd_may_run_unsigned_code() || ng_
     }];
 }
 - (void)startPreparedNativeDiagnostic { [self runNativeGame:self.nativeFullStartup app:self.launchingApp container:nil]; }
+- (void)localServiceWaiting:(NSNotification *)notification {
+    if(notification.object!=self.localAuthorization)return;
+    self.waitedForLocalService=YES;
+    self.status.text=@"Waiting for the local connection…\nIf using mobile data, temporarily turn it off in Control Centre and return here. We will retry for two minutes without closing the app.\nAfter preparation finishes, turn mobile data back on to connect to the game.";
+    [self.status.superview layoutIfNeeded];
+}
 - (void)arenaWillPrepare:(NSNotification *)notification {
     double mib = [notification.userInfo[@"bytes"] unsignedLongLongValue] / (1024.0 * 1024.0);
-    self.status.text=[NSString stringWithFormat:@"Preparing %@\nSetting up %.0f MiB of execution memory.\nThis step can take a few minutes. Keep Tolkara open.", self.launchingApp.name ?: @"app", mib];
+    self.status.text=self.wowController?@"Preparing to run. This can take a few minutes. Keep this app open.":
+        [NSString stringWithFormat:@"Setting up %.0f MiB of execution memory. Keep this app open.",mib];
+    if(self.waitedForLocalService) self.status.text=[self.status.text stringByAppendingString:
+        @"\nIf you turned off mobile data, wait until this step finishes before turning it back on."];
     [self.launchProgress start];
     [self.status.superview layoutIfNeeded];
 }
 - (void)arenaDidPrepare:(NSNotification *)notification {
     if ([notification.userInfo[@"prepared"] boolValue] && self.launchingApp)
-        self.status.text=[NSString stringWithFormat:@"Loading %@…\nMemory preparation is complete. Starting the app.",self.launchingApp.name ?: @"app"];
+        self.status.text=@"Preparation complete. Loading the game…";
     else [self.launchProgress stop];
+    if(self.waitedForLocalService) self.status.text=[self.status.text stringByAppendingString:
+        @"\nYou can now turn mobile data back on."];
     [self.status.superview layoutIfNeeded];
 }
 #endif
@@ -760,6 +807,9 @@ static BOOL PreparedFromOutside(void) { return hd_may_run_unsigned_code() || ng_
     setvbuf(stdout, NULL, _IOLBF, 0);
     for (NSString *argument in arguments) if ([argument hasPrefix:@"--probe-run-id="]) fprintf(log,"%s\n",argument.UTF8String);
     fprintf(log,"[host] execution mode=%s source=%s\n",ModeIdentifier(self.executionMode),self.executionModeSource.UTF8String);
+    // What the guest's gamepad code can see: the GameController framework is
+    // process-wide, and the log then carries every call the guest makes into it.
+    TKControllerProbeStartLogging(log);
     NSString *map = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"Guest/libraries.json"];
     NSError *error=nil;
     NSString *path=app ? [self.library executablePathForApp:app error:&error] : nil;
@@ -802,6 +852,23 @@ static BOOL PreparedFromOutside(void) { return hd_may_run_unsigned_code() || ng_
     const char *argv[64]; size_t argc=0;
     for (NSString *argument in launchArguments) if (argc<64) { argv[argc++]=argument.UTF8String; fprintf(log,"[host] argument %s\n",argument.UTF8String); }
     ng_set_arguments(argv,argc);
+    // Custom server: the portal lives in WTF/Config.wtf; the server key is
+    // installed in the client's heap by the runtime while it runs. Only the
+    // Forever beta has a profile this branch edits.
+    BOOL foreverBeta=[app.profile isEqualToString:@"wow-forever"] ||
+        [app.workingDirectory.lastPathComponent isEqualToString:@"_classic_beta_"];
+    TKCustomServerConfig *customServer=[TKCustomServerConfig current];
+    if (customServer.enabled && ![customServer isUsable] && foreverBeta)
+        fprintf(log,"[host] custom server is enabled but not configured; enter the auth host, key and group in Settings\n");
+    if ([customServer isUsable] && foreverBeta) {
+        NSError *customServerError=nil;
+        if (![customServer applyToGameDirectory:directory error:&customServerError])
+            fprintf(log,"[host] custom server config failed: %s\n",customServerError.localizedDescription.UTF8String);
+        if (!ng_set_custom_server(customServer.keyHex.UTF8String,(unsigned)customServer.group,customServer.portal.UTF8String))
+            fprintf(log,"[host] custom server key or group rejected; the portal was still written\n");
+        else
+            fprintf(log,"[host] custom server portal=%s group=%ld\n",customServer.portal.UTF8String,(long)customServer.group);
+    }
     // A profile's runtime libraries (opened by path, not linked) are placed with it.
     if (app.runtime) {
         NSString *runtime=TKDocumentsPath(app.runtime);
@@ -839,6 +906,7 @@ static BOOL PreparedFromOutside(void) { return hd_may_run_unsigned_code() || ng_
     fprintf(log,"[host] native %s %s\n",fullStartup?"startup":"first initializer",ok?"returned":"stopped"); fflush(log);
     self.status.text = ok ? (fullStartup ? [app.name stringByAppendingString:@" closed."] : @"Original client first initializer returned.") : @"Native startup stopped. See runtime log.";
     [self showStartStopped];
+    if (ok && fullStartup) [self.wowController finishStartupWithMessage:@"Session ended." failed:NO];
     // A cleanly closed game was the whole session in a library launch. End the
     // process after a short note: the next tap on Tolkara opens the library
     // ready to start another app (one guest startup per process).
@@ -1142,8 +1210,31 @@ static BOOL PreparedFromOutside(void) { return hd_may_run_unsigned_code() || ng_
     c.delegateClass = AKHostSceneDelegate.class;
     return c;
 }
+// The system relaunches the app to deliver completions of downloads that kept
+// running in the background; hand the session over so it can drain its events.
+- (void)application:(UIApplication *)application handleEventsForBackgroundURLSession:(NSString *)identifier completionHandler:(void (^)(void))completionHandler {
+    (void)application;
+    if ([identifier isEqualToString:TKWoWBackgroundSessionIdentifier]) [TKWoWClient handleBackgroundEventsWithCompletion:completionHandler];
+    else completionHandler();
+}
 @end
 
+// The app expects Documents to be a directory. A crash report or a failed
+// external file transfer can leave a plain file in its place, after which
+// every path underneath it fails; restore the directory before anything else.
+static void RestoreDocumentsDirectoryIfReplaced(void) {
+    NSString *documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    if (!documents.length) return;
+    NSDictionary *attributes = [NSFileManager.defaultManager attributesOfItemAtPath:documents error:NULL];
+    if (!attributes || [attributes[NSFileType] isEqualToString:NSFileTypeDirectory]) return;
+    [NSFileManager.defaultManager removeItemAtPath:documents error:NULL];
+    [NSFileManager.defaultManager createDirectoryAtPath:documents withIntermediateDirectories:YES attributes:nil error:NULL];
+    NSLog(@"[host] Documents was not a directory; it was replaced with an empty one.");
+}
+
 int main(int argc, char *argv[]) {
-    @autoreleasepool { return UIApplicationMain(argc, argv, nil, NSStringFromClass(AKHostAppDelegate.class)); }
+    @autoreleasepool {
+        RestoreDocumentsDirectoryIfReplaced();
+        return UIApplicationMain(argc, argv, nil, NSStringFromClass(AKHostAppDelegate.class));
+    }
 }

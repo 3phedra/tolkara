@@ -1,16 +1,11 @@
-# Tolkara
+# Wolkara
 
-Tolkara runs **unmodified** arm64 macOS applications on an iPad, with
-experimental iPhone support. It loads the original executable as data,
-executes its instructions natively on the device's Apple silicon, and
-translates the macOS API calls it makes (AppKit, Metal, CoreAudio, Carbon,
-Security, …) into their iOS/iPadOS equivalents.
+**World of Warcraft on iPhone and iPad, built on [Tolkara](https://github.com/tolkara/tolkara).**
 
-It follows the model of [Wine](https://www.winehq.org) and Valve's
-[Proton](https://github.com/ValveSoftware/Proton): the program is not ported or
-patched, and its executable is never modified or re-signed. Only the
-operating-system calls underneath it are translated. The application's own code,
-logic, assets and network protocol are left exactly as the vendor shipped them.
+Wolkara is an independent, experimental fork focused on the WoW experience:
+choose an edition, download its macOS client on the device, keep it updated,
+and play with touch controls or a physical controller. The game runs locally
+through Tolkara's compatibility layer; it is not streamed from a Mac.
 
 Tolkara is a do-it-yourself developer project. You build it yourself
 ([docs/BUILDING.md](docs/BUILDING.md)) and bring your own legally obtained copy
@@ -27,7 +22,11 @@ builds Tolkara on your Mac and signs it with your own account
 Store, and the repository and releases contain no third-party application code
 or assets.
 
-## Status
+This tree also carries the WoW launcher: a themed home that downloads and
+updates the WoW Forever client from Blizzard's CDN on the iPad itself
+([docs/WOW_LAUNCHER.md](docs/WOW_LAUNCHER.md)), merged from the Wolkara fork.
+
+## Try it with Xcode
 
 Tested on an iPad Pro (M5) with iPadOS 27. The first application validated end
 to end, with Developer service, is World of Warcraft Classic (Classic Era macOS
@@ -56,25 +55,28 @@ not been run on a device yet.
 Helper processes that an app launches separately
 (for example a voice-chat helper) are not supported.
 
-## Three ways to run code
+This is a source release for people comfortable with Xcode. There is no tested
+public Wolkara IPA, App Store/TestFlight release or AltStore PAL install path.
+A successful build alone does not prove that a signing profile permits startup.
 
-iPadOS executes only code whose pages are covered by a valid code signature,
-with one exception for development: memory that a debugger has prepared, either
-the device's own developer service or a JIT enabler: your sideloading tool, or a
-separate one such as StikDebug. Tolkara supports three routes. Each user chooses one: the app asks
-on first launch, and **Execution mode…** in the app changes it later.
+## Features
 
-| | Developer service | Local signing | External JIT |
-| --- | --- | --- | --- |
-| What it does | Tolkara's bundled packet-tunnel extension reaches the iPad's own developer service, which prepares executable memory and detaches before any application code runs. Tolkara then copies the original code in. | The application's final code pages are put into a small library, a *page container*, signed with your own developer identity. iPadOS validates it when Tolkara loads it, and Tolkara maps those validated pages into place. | You sideload Tolkara (for example with SideStore) and open it with JIT enabled, by your sideloading tool or a JIT enabler such as StikDebug. The enabler's debugger prepares executable memory and is asked to detach. Tolkara does not run application code while any debugger is attached, then copies the original code in. |
-| What it requires | Developer Mode, a one-time enrolment from a Mac (`tools/enroll.sh`), and permission for Tolkara's own VPN-style tunnel. Preparation at every launch, about 3 MB per second (33 seconds for Heroes III). | Developer Mode and your developer identity. For now the container is built and signed on a Mac (`tools/build_signed_container.py`) and copied to the iPad. For an application that rewrites its own code at launch, this needs a capture of its final code pages, which Tolkara cannot produce yet. | Developer Mode, a sideloading tool and a JIT enabler. A free Apple ID can sign the app, but free signing drops the increased-memory-limit and extended-virtual-addressing capabilities, so large applications may not fit. Not yet run on a device. |
-| Which build | The Tolkara app (`tools/install.sh`). | Either build. | The TolkaraDiagnostics app, unsigned (`tools/package_ipa.sh`). |
-| What it does with the application's code | Runs the original code unchanged. Nothing of the application is ever signed. | Leaves the executable unchanged, but keeps a derived copy of its final code pages on your iPad (and in your build folder), signed under your identity. Tolkara refuses to start if the container does not match the executable or what the application's own startup code produces. | Runs the original code unchanged. Nothing of the application is ever signed. |
+- A single WoW home screen with edition, region and language selection.
+- On-device installation and automatic update checks; required updates finish
+  before Play becomes available.
+- Resumable downloads, checksum verification and reuse of verified unchanged
+  game data. Updates preserve settings and addons.
+- An iOS keyboard with dictation and an editable draft that replaces the focused
+  game field, plus a touch trackpad with two-finger scrolling.
+- Physical controller support and an on-screen controller when none is connected.
+- Movable touch controls, opacity and size settings, an alignment grid and haptics.
 
-Choose one. [COMPATIBILITY.md](COMPATIBILITY.md) says which mode each result
-was obtained with.
+## What has been tested
 
-## How it works
+The developer reports **60 FPS at graphics quality 4 on an iPhone 16 Pro Max**
+playing WoW Forever (Classic beta). This is a gameplay report, not a benchmark
+or a promise for every scene/device. Render scale was not specified in this
+latest report; the earlier quality-2 session used 50% render scale.
 
 | Module | Role |
 | --- | --- |
@@ -85,10 +87,13 @@ was obtained with.
 | [`profiles/`](profiles) | Small data files that describe a tested application: its name and where its files live. No code. |
 | [`management/`](management) | Tolkara Management, the Mac app that guides a user through building, installing and setting up an application ([docs/MANAGEMENT.md](docs/MANAGEMENT.md)). |
 
-More detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and the protocol notes
-in [docs/LOCAL_AUTHORIZATION.md](docs/LOCAL_AUTHORIZATION.md).
+The updater has synthetic regression coverage, isolated Mac-copy tests and a
+recorded device patch installations. Xcode logs also confirm that the latest
+metadata-recovery fix completed an on-device update. A complete first download
+into an empty iPhone installation still needs end-to-end validation. Follow the [fresh-install checklist](docs/FRESH_INSTALL_TEST.md)
+and report the exact commit and client build you tried.
 
-## Getting started
+## Current limits
 
 **The easy way:** download `Tolkara-Management.dmg` from the
 [releases](https://github.com/tolkara/tolkara/releases). Tolkara Management
@@ -104,35 +109,26 @@ Python 3, an Apple developer account, and an iPad or an
 The full walkthrough, including signing and Developer Mode, is in
 **[docs/BUILDING.md](docs/BUILDING.md)**. In short:
 
-```bash
-cp local.env.example local.env
-```
-
-Fill in your team ID, a bundle ID unique to you, your iPad's UDID and the path
-of the macOS executable, and optionally `TOLKARA_MODE` (`developer-service` or
-`local-signing`; without it the app asks). Then:
-
-```bash
-tools/install.sh
-```
-
-With Developer service, enrol once:
-
-```bash
-tools/enroll.sh
-```
-
-With `TOLKARA_MODE=local-signing`, `tools/install.sh` also builds, signs and
-copies the page container. Copy your application's files to the iPad (for the
-WoW Classic profile,
-[`profiles/wow-classic-era/install.py`](profiles/wow-classic-era)), open Tolkara
-on the iPad and tap the app in its library.
-
-To check a change without a device:
+## Development
 
 ```bash
 tools/test_emulation.sh
 ```
+
+Focused updater tests: `tools/test_wow_launcher.sh`. UIKit fixtures:
+`tools/test_wow_launcher_ui.sh` (set `SIMULATOR` to an available simulator).
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before contributing.
+
+- [Launcher and updater](docs/WOW_LAUNCHER.md)
+- [Touch input](docs/TOUCH_INPUT.md)
+- [Touch controller](docs/TOUCH_CONTROLLER_PROPOSAL.md)
+- [Engine architecture](docs/ARCHITECTURE.md)
+- [Advanced Tolkara build and execution modes](docs/BUILDING.md)
+- [Distribution research and unverified routes](docs/WOLKARA_DISTRIBUTION.md)
+
+The shared engine, adapters and non-WoW test fixtures remain in this fork to
+preserve upstream compatibility and regression coverage. Public Wolkara builds
+use the WoW home; alternative loaders/modes are development tools.
 
 ## What Tolkara does to the application
 
@@ -170,50 +166,35 @@ So that you can judge this yourself rather than take our word for it:
 
 ## Policy
 
-Tolkara is a compatibility layer and nothing else. The project will not accept:
+Wolkara builds on Tolkara as a compatibility layer. This fork will not accept:
 
 - reading or changing an application's memory for any purpose other than
   loading it, including "trainers", overlays, bots or input automation;
 - workarounds for anti-cheat, licence or integrity checks;
-- bundled or downloadable copies of any third-party application, asset or
-  operating-system component.
+- redistribution of third-party application code, assets or operating-system
+  components in this repository or its releases. The updater obtains game
+  content directly from the vendor for the user's installation.
 
-## Online games and account risk
+## Online games
 
-Read this before you use Tolkara with an online game.
-
-Tolkara is not supported, endorsed or approved by the publisher of any
-application you run with it. Running a game client on an operating system it was
-not released for may be against that game's terms of service.
-
-Blizzard has for many years tolerated players who run its games on Linux
-through Wine and Proton, and does not ban them for doing so. Tolkara is built
-the same way and for the same purpose. That history is not a promise. Automated
-detection can misfire, as it occasionally has for Wine users, and a publisher can
-change its position at any time without notice.
-
-With Local signing, a signed copy of the application's unpacked code is kept on
-your iPad. That changes nothing the publisher ships, but whether it is
-acceptable is for the publisher's terms to say, not us.
-
-**If you use Tolkara with an online account, the risk of a suspension or ban is
-real and it is entirely yours.** The authors and contributors accept no
-responsibility for lost accounts, characters, purchases or subscriptions. If
-that risk is not acceptable to you, do not use Tolkara with that account.
+Wolkara is not approved or supported by Blizzard. Successful execution does not
+establish publisher approval or guarantee the safety of an online account.
+The project provides no anti-cheat, license or integrity-check workarounds.
 
 ## Legal
 
-Tolkara is released under the [MIT License](LICENSE). It contains no code from
-Apple, Blizzard or any other third party; see [NOTICE.md](NOTICE.md) for the
-references used while writing it.
+Wolkara and the upstream Tolkara code are released under the [MIT License](LICENSE).
+No game files or Apple operating-system components are included. Third-party
+adaptations and reference material are credited in [NOTICE.md](NOTICE.md).
 
-Tolkara is an independent project and is not affiliated with, sponsored by or
+Wolkara is an independent project and is not affiliated with, sponsored by or
 endorsed by Apple Inc. or Blizzard Entertainment, Inc. macOS, iPadOS, iPad,
 Metal and Xcode are trademarks of Apple Inc. World of Warcraft and Blizzard are
 trademarks of Blizzard Entertainment, Inc. Other names are the property of their
 owners and are used only to describe compatibility.
 
 You are responsible for having the right to use any application you run with
-Tolkara, and for complying with its licence.
+Wolkara, and for complying with its licence.
 
-Project home: [tolkara.org](https://tolkara.org). Contact: vk@tolkara.org.
+Wolkara: [source and issues](https://github.com/fJavierLasso/wolkara).
+Upstream engine: [Tolkara](https://github.com/tolkara/tolkara) · [tolkara.org](https://tolkara.org).

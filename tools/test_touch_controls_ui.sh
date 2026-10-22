@@ -14,7 +14,7 @@ xcrun simctl bootstatus "$SIM_ID" -b > /dev/null
 APP=build/touch-controls-fixture/TouchControls.app
 mkdir -p "$APP"
 SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
-xcrun --sdk iphonesimulator clang -target arm64-apple-ios17.0-simulator -isysroot "$SDK" -fobjc-arc -O1 -g \
+xcrun --sdk iphonesimulator clang -target "$(uname -m)-apple-ios17.0-simulator" -isysroot "$SDK" -fobjc-arc -O1 -g \
     -Wall -Wextra -Werror -Wno-unused-parameter -Wno-deprecated-declarations \
     -Itranslation/AKSupport -Itranslation/AppKit translation/AKSupport/AKSupport.m \
     translation/AppKit/*.m translation/AppKit/*.c tests/test_touch_controls_app.m \
@@ -38,4 +38,11 @@ cat > "$APP/Info.plist" <<'PLIST'
 PLIST
 codesign --force --sign - "$APP" > /dev/null
 xcrun simctl install "$SIM_ID" "$APP"
-xcrun simctl launch --terminate-running-process --console "$SIM_ID" org.tolkara.tests.touch-controls "$@"
+if [[ " $* " == *" --self-test "* ]]; then
+    # simctl may report success even when the app aborts an assertion.
+    LOG=build/touch-controls-fixture/self-test.log
+    xcrun simctl launch --terminate-running-process --console "$SIM_ID" org.tolkara.tests.touch-controls "$@" 2>&1 | tee "$LOG"
+    grep -q 'TOUCH_UI_SELF_TEST_PASS:' "$LOG"
+else
+    xcrun simctl launch --terminate-running-process --console "$SIM_ID" org.tolkara.tests.touch-controls "$@"
+fi

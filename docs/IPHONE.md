@@ -20,6 +20,37 @@ or set `GUEST_EXE` for a build made for one application, as on the iPad. Keep
 Tolkara in the foreground while memory is prepared at each launch. After
 enrollment the iPhone launches games without the Mac, also after a reboot.
 
+### Starting with mobile data (experimental recovery)
+
+The first reported cellular-only launch on 2026-10-04 failed to connect to the
+on-device developer service even though Tolkara's route was running. Wi-Fi was
+enabled but not connected. Earlier launches without a Mac did not test this
+network condition. Cellular-only startup is an unresolved requirement.
+
+The current branch includes a recovery sequence to test without finding Wi-Fi:
+
+1. Keep mobile data enabled while checking/installing updates and pressing Play.
+2. If the local TCP connection fails, Tolkara keeps its route and retries for up
+   to two minutes. When the waiting message appears, temporarily turn off Mobile
+   Data in Control Centre, then return to Tolkara without closing it.
+3. Keep Tolkara in front while it prepares memory. After preparation finishes,
+   turn Mobile Data back on for the game's connection. Also restore it if setup
+   times out or fails.
+
+The app does not change cellular settings itself. It retries only a TCP reset or
+timeout before the first connection: pairing/proof failures, later disconnects,
+memory preparation and uncertain detach are never retried by this mechanism.
+Previous TCP tuples remain reserved so delayed packets cannot enter the reflector.
+The original game executable, authentication and detach requirements are unchanged.
+
+This is a **candidate workaround, not a confirmed iPhone fix**. It is informed by
+[StikJIT's documented network sequence](https://github.com/StikDebug/StikJIT/blob/main/INTEGRATION.md)
+and [SideStore's cellular-refresh work](https://github.com/SideStore/SideStore/releases).
+Their results do not prove Tolkara's memory preparation works under these network
+transitions. Normal startup with mobile data continuously enabled remains a goal.
+Local signing avoids this transport but currently needs a Mac-built container
+matching each exact client version; it does not yet solve independent updates.
+
 ## Copy applications
 
 Use the application's profile install script, as on the iPad. Tolkara's

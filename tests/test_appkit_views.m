@@ -208,14 +208,41 @@ int main(void) { @autoreleasepool {
     move=[app nextEventMatchingMask:1ULL<<NSEventTypeMouseMoved untilDate:NSDate.distantPast inMode:NSDefaultRunLoopMode dequeue:YES];
     assert(move && CGPointEqualToPoint(move.locationInWindow,CGPointMake(46,42)) && move.deltaX==-4 && move.deltaY==-2);
     window.mouseConfinementRect=CGRectZero;assert(!AKMouseIsCaptured());
+
+    // Servicing UIKit with a busy queue must preserve masks, peeking and
+    // priority insertion, even when a native callback adds a new first event.
+    NSEvent *down = [NSEvent new], *up = [NSEvent new], *priority = [NSEvent new];
+    down.type = priority.type = NSEventTypeKeyDown; up.type = NSEventTypeKeyUp;
+    [app postEvent:down atStart:NO]; [app postEvent:up atStart:NO];
+    CFRunLoopPerformBlock(CFRunLoopGetCurrent(), kCFRunLoopDefaultMode, ^{
+        [app postEvent:priority atStart:YES];
+    });
+    NSTimeInterval deadline = NSProcessInfo.processInfo.systemUptime + 1;
+    NSEvent *peek = nil;
+    do {
+        peek = [app nextEventMatchingMask:1ULL<<NSEventTypeKeyDown untilDate:NSDate.distantPast
+            inMode:NSDefaultRunLoopMode dequeue:NO];
+    } while (peek != priority && NSProcessInfo.processInfo.systemUptime < deadline);
+    assert(peek == priority);
+    assert([app nextEventMatchingMask:1ULL<<NSEventTypeKeyUp untilDate:NSDate.distantPast
+        inMode:NSDefaultRunLoopMode dequeue:YES] == up);
+    assert(next_input() == priority && next_input() == down);
+
     // Software keys take the same event queue as hardware keys, preserve
     // Unicode and never depend on reading the guest's text/selection.
     AKTouchControls *controls = [host valueForKey:@"_touchControls"];
-    assert(controls && controls.hasText && controls.isSecureTextEntry);
-    // Only the two buttons take touches; the gap between them is the game's.
-    controls.frame = CGRectMake(0, 0, 96, 44); [controls layoutIfNeeded];
+    assert(controls && controls.hasText);
+    // Dictation uses the separate UIKit text view introduced by the keyboard
+    // change. The toolbar itself no longer supplies text input traits.
+    UITextView *keyboard = [controls valueForKey:@"_keyboardInput"];
+    assert([keyboard isKindOfClass:UITextView.class] && !keyboard.isSecureTextEntry);
+    assert(keyboard.autocorrectionType == UITextAutocorrectionTypeNo);
+    assert(keyboard.spellCheckingType == UITextSpellCheckingTypeNo);
+    // Only the buttons take touches; the gap between them is the game's.
+    controls.frame = CGRectMake(0, 0, 200, 44); [controls layoutIfNeeded];
     assert([controls pointInside:CGPointMake(20, 20) withEvent:nil] && [controls pointInside:CGPointMake(70, 20) withEvent:nil]);
-    assert(![controls pointInside:CGPointMake(48, 20) withEvent:nil]);
+    assert([controls pointInside:CGPointMake(124, 20) withEvent:nil] && [controls pointInside:CGPointMake(176, 20) withEvent:nil]);
+    assert(![controls pointInside:CGPointMake(48, 20) withEvent:nil] && ![controls pointInside:CGPointMake(100, 20) withEvent:nil]);
     [controls insertText:@"@ñ🙂"];
     NSArray<NSString *> *typed = @[@"@", @"ñ", @"🙂"];
     for (unsigned i = 0; i < 3; i++) for (unsigned up = 0; up < 2; up++) {
@@ -224,6 +251,31 @@ int main(void) { @autoreleasepool {
         assert(event.window == window && [event.characters isEqual:typed[i]]);
         assert(event.keyCode == (i ? 0xFF : 19));
     }
+    // Whole-field replacement selects all before deleting/inserting, with
+    // balanced key pairs, no leaked Command modifier, and no implicit Return.
+    [controls.delegate touchReplaceText:@"@ñ🙂"];
+    for (unsigned up = 0; up < 2; up++) {
+        NSEvent *event = next_input();
+        assert(event.type == (up ? NSEventTypeKeyUp : NSEventTypeKeyDown));
+        assert(event.keyCode == 0 && event.modifierFlags == NSEventModifierFlagCommand);
+        assert([event.characters isEqual:@"a"] && event.window == window);
+    }
+    for (unsigned up = 0; up < 2; up++) {
+        NSEvent *event = next_input();
+        assert(event.type == (up ? NSEventTypeKeyUp : NSEventTypeKeyDown));
+        assert(event.keyCode == 51 && event.modifierFlags == 0 && event.window == window);
+    }
+    for (unsigned i = 0; i < 3; i++) for (unsigned up = 0; up < 2; up++) {
+        NSEvent *event = next_input();
+        assert(event.type == (up ? NSEventTypeKeyUp : NSEventTypeKeyDown));
+        assert([event.characters isEqual:typed[i]] && event.window == window);
+        assert(event.modifierFlags == (i ? 0 : NSEventModifierFlagShift));
+    }
+    assert(![app nextEventMatchingMask:UINT64_MAX untilDate:NSDate.distantPast inMode:NSDefaultRunLoopMode dequeue:YES]);
+    [controls.delegate touchReplaceText:@""];
+    assert(next_input().keyCode == 0 && next_input().keyCode == 0);
+    assert(next_input().keyCode == 51 && next_input().keyCode == 51);
+    assert(![app nextEventMatchingMask:UINT64_MAX untilDate:NSDate.distantPast inMode:NSDefaultRunLoopMode dequeue:YES]);
     [controls deleteBackward];
     assert(next_input().keyCode == 51 && next_input().type == NSEventTypeKeyUp);
     [controls insertText:@"\n"];

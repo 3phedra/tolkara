@@ -3,7 +3,35 @@
 #include <dlfcn.h>
 
 static NSArray *candidates;
+static BOOL extraRootsLoaded;
 static CFStringRef marker(void){return CFSTR("Tolkara public system certificate source");}
+// Extra roots for custom servers: PEM certificates concatenated in
+// Documents/extra-roots.pem are appended to the packaged macOS roots. They are
+// subject to the same check as every packaged root in AKCopySystemCertificates
+// (the iPad's own trust store must accept each candidate), so the file cannot
+// introduce an anchor the tablet itself does not trust. Read once per launch;
+// remove the file and relaunch to go back to the packaged roots.
+static void AKAppendExtraCertificateRoots(void) {
+    NSData *data=[NSData dataWithContentsOfFile:[NSHomeDirectory() stringByAppendingPathComponent:@"Documents/extra-roots.pem"]];
+    if(!data.length || data.length>4*1024*1024)return;
+    NSString *text=[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    if(!text)return;
+    NSMutableArray *extra=[NSMutableArray array];
+    for(NSString *block in [text componentsSeparatedByString:@"-----END CERTIFICATE-----"]){
+        NSRange begin=[block rangeOfString:@"-----BEGIN CERTIFICATE-----"];
+        if(begin.location==NSNotFound)continue;
+        NSString *body=[block substringFromIndex:NSMaxRange(begin)];
+        body=[body stringByReplacingOccurrencesOfString:@"\n" withString:@""];
+        body=[body stringByReplacingOccurrencesOfString:@"\r" withString:@""];
+        body=[body stringByReplacingOccurrencesOfString:@" " withString:@""];
+        NSData *der=[[NSData alloc] initWithBase64EncodedString:body options:0];
+        SecCertificateRef certificate=der?SecCertificateCreateWithData(NULL,(__bridge CFDataRef)der):NULL;
+        if(!certificate)continue;
+        [extra addObject:CFBridgingRelease(certificate)];
+    }
+    if(!extra.count)return;
+    @synchronized(NSProcessInfo.class){if(candidates)candidates=[candidates arrayByAddingObjectsFromArray:extra];}
+}
 BOOL AKLoadSystemCertificateCandidates(NSString *path) {
     NSData *data=path?[NSData dataWithContentsOfFile:path]:nil;
     if(!data || data.length>4*1024*1024)return NO;
@@ -23,6 +51,7 @@ OSStatus AKOpenSystemKeychain(const char *path,CFTypeRef *keychain) {
     if(!path || strcmp(path,"/System/Library/Keychains/SystemRootCertificates.keychain"))return errSecUnimplemented;
     @synchronized(NSProcessInfo.class){
         if(!candidates && !AKLoadSystemCertificateCandidates([NSBundle.mainBundle pathForResource:@"CompatibilityRootCertificates" ofType:@"plist"]))return errSecNotAvailable;
+        if(candidates && !extraRootsLoaded){AKAppendExtraCertificateRoots();extraRootsLoaded=YES;}
         *keychain=CFRetain(marker());return errSecSuccess;
     }
 }

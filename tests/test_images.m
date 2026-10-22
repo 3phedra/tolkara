@@ -9,10 +9,15 @@ int main(void) { @autoreleasepool {
     rep.bitmapData[0]=255; rep.bitmapData[3]=255;
     CGImageRef cg=rep.CGImage; assert(cg && CGImageGetWidth(cg)==3 && CGImageGetHeight(cg)==2);
     CFDataRef first=CGDataProviderCopyData(CGImageGetDataProvider(cg));
+    CGImageRef earlier=cg;
     rep.bitmapData[0]=42; cg=rep.CGImage;
     CFDataRef second=CGDataProviderCopyData(CGImageGetDataProvider(cg));
     assert(CFDataGetBytePtr(first)[0]==255 && CFDataGetBytePtr(second)[0]==42);
-    CFRelease(first); CFRelease(second);
+    assert(earlier!=cg);
+    CFDataRef earlierData=CGDataProviderCopyData(CGImageGetDataProvider(earlier));
+    assert(earlierData && CFDataGetBytePtr(earlierData)[0]==255);
+    CFRelease(earlierData); CFRelease(first); CFRelease(second);
+    CGImageRelease(earlier); CGImageRelease(cg);
     unsigned char external[32]={0}, *planes[5]={external};
     @autoreleasepool { NSBitmapImageRep *borrowed=bitmap(planes,3,16); assert(borrowed.bitmapData==external); borrowed.bitmapData[0]=99; }
     assert(external[0]==99); assert(!bitmap(NULL,LONG_MAX,0)); assert(!bitmap(NULL,3,11)); assert(!bitmap(NULL,-1,0));

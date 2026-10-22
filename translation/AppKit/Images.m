@@ -40,7 +40,7 @@ CGPathRef AKCreateCursorPath(CGImageRef image, CGSize size, CGPoint hotSpot) {
 @implementation NSBitmapImageRep {
     NSMutableData *_storage;
     unsigned char *_pixels;
-    CGImageRef _snapshot;
+    NSMutableArray<NSValue *> *_snapshots;
 }
 - (instancetype)initWithBitmapDataPlanes:(unsigned char **)planes pixelsWide:(NSInteger)width pixelsHigh:(NSInteger)height bitsPerSample:(NSInteger)bits samplesPerPixel:(NSInteger)samples hasAlpha:(BOOL)alpha isPlanar:(BOOL)planar colorSpaceName:(NSString *)space bitmapFormat:(NSUInteger)format bytesPerRow:(NSInteger)rowBytes bitsPerPixel:(NSInteger)pixelBits {
     AKLog(@"bitmap %ldx%ld bits=%ld samples=%ld alpha=%d planar=%d format=%lu stride=%ld pixelBits=%ld space=%@",(long)width,(long)height,(long)bits,(long)samples,alpha,planar,(unsigned long)format,(long)rowBytes,(long)pixelBits,space);
@@ -54,6 +54,7 @@ CGPathRef AKCreateCursorPath(CGImageRef image, CGSize size, CGPoint hotSpot) {
     if(!rowBytes) rowBytes=minimum;
     if(rowBytes<minimum || height>LONG_MAX/rowBytes) return nil;
     if((self=[super init])) {
+        _snapshots=[NSMutableArray new];
         self.pixelsWide=width; self.pixelsHigh=height; self.bitsPerSample=bits;
         self.hasAlpha=alpha; self.colorSpaceName=space; self.size=CGSizeMake(width,height);
         _bytesPerRow=rowBytes; _bitsPerPixel=pixelBits; _samplesPerPixel=samples; _bitmapFormat=format;
@@ -88,14 +89,16 @@ CGPathRef AKCreateCursorPath(CGImageRef image, CGSize size, CGPoint hotSpot) {
 - (void)getBitmapDataPlanes:(unsigned char **)planes { if(planes) { planes[0]=_pixels; for(int i=1;i<5;i++) planes[i]=NULL; } }
 - (CGImageRef)CGImage {
     // Snapshot on every request: clients can modify bitmapData without notifying
-    // the representation. The provider owns a copy, never the caller's plane.
+    // the representation. Keep every snapshot for the receiver's lifetime so a
+    // caller holding an earlier image across a later request stays valid.
     NSData *bytes=[NSData dataWithBytes:_pixels length:(NSUInteger)_bytesPerPlane];
     CGDataProviderRef provider=CGDataProviderCreateWithCFData((__bridge CFDataRef)bytes);
     CGColorSpaceRef space=CGColorSpaceCreateDeviceRGB();
     CGImageRef next=CGImageCreate(self.pixelsWide,self.pixelsHigh,8,_bitsPerPixel,_bytesPerRow,space,self.ak_bitmapInfo,provider,NULL,false,kCGRenderingIntentDefault);
     CGColorSpaceRelease(space); CGDataProviderRelease(provider);
-    if(_snapshot) CGImageRelease(_snapshot); _snapshot=next;
-    return _snapshot;
+    if(!next) return NULL;
+    [_snapshots addObject:[NSValue valueWithPointer:next]];
+    return CGImageRetain(next);
 }
 - (CGBitmapInfo)ak_bitmapInfo {
     BOOL first=_bitmapFormat&1,straight=_bitmapFormat&2;
@@ -103,7 +106,9 @@ CGPathRef AKCreateCursorPath(CGImageRef image, CGSize size, CGPoint hotSpot) {
     if(self.hasAlpha) info=first ? (straight ? kCGImageAlphaFirst : kCGImageAlphaPremultipliedFirst) : (straight ? kCGImageAlphaLast : kCGImageAlphaPremultipliedLast);
     return (CGBitmapInfo)info;
 }
-- (void)dealloc { if(_snapshot) CGImageRelease(_snapshot); }
+- (void)dealloc {
+    for(NSValue *value in _snapshots) CGImageRelease((CGImageRef)value.pointerValue);
+}
 @end
 NSString *const NSImageNameApplicationIcon=@"NSApplicationIcon";
 @implementation NSImage { NSMutableArray<NSImageRep *> *_reps; }

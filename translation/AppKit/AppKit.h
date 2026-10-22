@@ -175,6 +175,16 @@ typedef NS_OPTIONS(NSUInteger, NSEventModifierFlags) {
 - (void)close;
 @end
 
+// The game opens Battle.net's account/web-login pages through the workspace;
+// on the iPad these become Safari (UIApplication openURL).
+@interface NSWorkspace : NSObject
++ (NSWorkspace *)sharedWorkspace;
+- (NSNotificationCenter *)notificationCenter;
+- (BOOL)openURL:(NSURL *)url;
+- (BOOL)openURL:(NSURL *)url options:(NSUInteger)options configuration:(NSDictionary *)configuration error:(NSError **)error;
+- (BOOL)openFile:(NSString *)path;
+@end
+
 @interface NSApplication : NSResponder
 @property (nonatomic,readonly) NSEvent *currentEvent;
 + (NSApplication *)sharedApplication;

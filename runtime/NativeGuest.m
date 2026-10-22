@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
 #include "NativeGuest.h"
 #include "DebuggerArena.h"
 #include "HostDiagnostics.h"
@@ -21,6 +22,7 @@ static NativeCodeMemory local_quarantine;
 #include "HostExecutionProbe.h"
 #include "GuestWait.h"
 #include "GuestWaitTrace.h"
+#include "CustomServer.h"
 #include "SignedImage.h"
 #include <dlfcn.h>
 #include <mach-o/loader.h>
@@ -28,6 +30,7 @@ static NativeCodeMemory local_quarantine;
 #import <objc/runtime.h>
 #include <dirent.h>
 #include <errno.h>
+#include <limits.h>
 #include <libkern/OSCacheControl.h>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -37,6 +40,8 @@ static NativeCodeMemory local_quarantine;
 #include <signal.h>
 #include <spawn.h>
 #include <arpa/inet.h>
+#include <CoreText/CoreText.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <sys/socket.h>
@@ -150,6 +155,90 @@ bool ng_reserve_arena(FILE *log) {
     return false;
 }
 #define LOG(...) do { fprintf(guest.log, __VA_ARGS__); fflush(guest.log); } while (0)
+// Opt-in diagnostic: after the unpacking initializer returns, copy the entire
+// unpacked executable arena next to the guest log. The flag is removed so a
+// launch dumps at most once; the file contains no game data, only code pages.
+static void maybe_dump_guest_arena(void) {
+    NSString *flag=[NSHomeDirectory() stringByAppendingPathComponent:@"Documents/dump-guest-arena"];
+    if (![NSFileManager.defaultManager fileExistsAtPath:flag]) return;
+    NSString *path=[NSHomeDirectory() stringByAppendingPathComponent:@"Documents/guest-arena.bin"];
+    int fd=open(path.fileSystemRepresentation,O_WRONLY|O_CREAT|O_TRUNC,0600);
+    if(fd<0) { LOG("[native] guest arena dump open failed errno=%d\n",errno); return; }
+    const uint8_t *bytes=(const uint8_t *)guest.arena.executable;
+    size_t size=guest.arena.size, offset=0;
+    while(offset<size) {
+        size_t chunk=MIN(size-offset,(size_t)(1u<<20));
+        ssize_t written=write(fd,bytes+offset,chunk);
+        if(written<=0) break;
+        offset+=(size_t)written;
+    }
+    close(fd);
+    [NSFileManager.defaultManager removeItemAtPath:flag error:NULL];
+    LOG("[native] guest arena dumped %zu/%zu bytes base=%p slide=%#llx preferred_base=%#llx\n",
+        offset,size,(void *)guest.base,(unsigned long long)guest.slide,
+        (unsigned long long)(guest.base-guest.slide));
+}
+static char guest_crash_dump_flag[PATH_MAX];
+static char guest_crash_dump_state[PATH_MAX];
+static char guest_crash_dump_memory[PATH_MAX];
+static bool guest_crash_dump_enabled;
+
+static void prepare_guest_crash_dump(void) {
+    NSString *documents=[NSHomeDirectory() stringByAppendingPathComponent:@"Documents"];
+    snprintf(guest_crash_dump_flag,sizeof guest_crash_dump_flag,"%s/dump-guest-crash",documents.fileSystemRepresentation);
+    snprintf(guest_crash_dump_state,sizeof guest_crash_dump_state,"%s/guest-crash-state.txt",documents.fileSystemRepresentation);
+    snprintf(guest_crash_dump_memory,sizeof guest_crash_dump_memory,"%s/guest-crash-memory.bin",documents.fileSystemRepresentation);
+    guest_crash_dump_enabled=access(guest_crash_dump_flag,F_OK)==0;
+}
+
+static void guest_dump_page(FILE *text,int fd,uintptr_t page,uintptr_t *pages,int *count) {
+    for(int i=0;i<*count;i++) if(pages[i]==page) return;
+    unsigned char buffer[0x1000];
+    vm_size_t got=0;
+    if(vm_read_overwrite(mach_task_self(),(vm_address_t)page,sizeof buffer,(vm_address_t)buffer,&got)!=KERN_SUCCESS || !got) return;
+    off_t offset=lseek(fd,0,SEEK_END);
+    if(offset<0 || write(fd,buffer,got)!=(ssize_t)got) return;
+    fprintf(text,"mem %#llx %#zx %#llx\n",(unsigned long long)page,(size_t)got,(unsigned long long)offset);
+    if(*count<64) pages[(*count)++]=page;
+}
+
+static void guest_dump_region(FILE *text,int fd,uintptr_t address,size_t length,uintptr_t *pages,int *count) {
+    if(!address || !length) return;
+    uintptr_t first=address & ~(uintptr_t)0xFFF;
+    uintptr_t last=(address+length+0xFFF) & ~(uintptr_t)0xFFF;
+    for(uintptr_t page=first;page<last;page+=0x1000) guest_dump_page(text,fd,page,pages,count);
+}
+
+static void dump_guest_crash_state(int signal_number,siginfo_t *info,void *uap) {
+    if(!guest_crash_dump_enabled) return;
+    guest_crash_dump_enabled=false;
+    unlink(guest_crash_dump_flag);
+    ucontext_t *context=uap;
+    arm_thread_state64_t state=context->uc_mcontext->__ss;
+    uintptr_t pc=(uintptr_t)arm_thread_state64_get_pc(state),lr=(uintptr_t)arm_thread_state64_get_lr(state);
+    uintptr_t sp=(uintptr_t)arm_thread_state64_get_sp(state),fp=(uintptr_t)arm_thread_state64_get_fp(state);
+    FILE *text=fopen(guest_crash_dump_state,"w");
+    int fd=open(guest_crash_dump_memory,O_WRONLY|O_CREAT|O_TRUNC,0600);
+    if(!text) return;
+    fprintf(text,"signal=%d fault=%p pc=%#llx base=%#llx slide=%#llx lr=%#llx sp=%#llx fp=%#llx\n",
+        signal_number,info?info->si_addr:NULL,(unsigned long long)pc,(unsigned long long)guest.base,
+        (unsigned long long)guest.slide,(unsigned long long)lr,(unsigned long long)sp,(unsigned long long)fp);
+    for(unsigned i=0;i<29;i++) fprintf(text,"x%u=%#llx\n",i,(unsigned long long)state.__x[i]);
+    fprintf(text,"register_dump_end\n");
+    if(fd>=0) {
+        uintptr_t pages[64]={0}; int count=0;
+        guest_dump_region(text,fd,pc,0x1000,pages,&count);
+        guest_dump_region(text,fd,lr,0x1000,pages,&count);
+        guest_dump_region(text,fd,sp,0x8000,pages,&count);
+        guest_dump_region(text,fd,fp,0x8000,pages,&count);
+        for(unsigned i=0;i<29;i++) guest_dump_region(text,fd,(uintptr_t)state.__x[i],0x1000,pages,&count);
+        if(info) guest_dump_region(text,fd,(uintptr_t)info->si_addr,0x1000,pages,&count);
+        close(fd);
+    }
+    fclose(text);
+    LOG("[native] guest crash state written to %s\n",guest_crash_dump_state);
+}
+
 static void log_once(const char *format, ...) __attribute__((format(printf,1,2)));
 static unsigned trace_tid(void);
 __attribute__((noinline,used,visibility("default")))
@@ -176,6 +265,12 @@ static id log_exception(id exception) {
 // Opt-in crash diagnostics use only a preopened fd and raw memory reads in the
 // signal handler. Chain the client's handler unchanged after saving evidence.
 static int signal_log_fd=-1;
+static bool native_sample_requested(void) {
+    if([NSProcessInfo.processInfo.arguments containsObject:@"--sample-native"]) return true;
+    // A file flag arms sampling for launches iOS starts itself (Home Screen).
+    return [NSFileManager.defaultManager fileExistsAtPath:
+        [NSHomeDirectory() stringByAppendingPathComponent:@"Documents/sample-native"]];
+}
 static struct sigaction guest_signal_actions[NSIG];
 static void signal_hex(const char *label, uintptr_t value) {
     char buffer[128]; size_t n=0; while(label[n] && n<96) { buffer[n]=label[n]; n++; }
@@ -313,6 +408,8 @@ static void sample_all_threads(unsigned number) {
     if(task_threads(mach_task_self(),&threads,&count)!=KERN_SUCCESS) return;
     flockfile(guest.log);
     LOG("[native] threads sample %u count=%u\n",number,count);
+    NSProcessInfo *process=NSProcessInfo.processInfo;
+    LOG("[native] thermal=%ld low_power=%d\n",(long)process.thermalState,process.lowPowerModeEnabled);
     for(mach_msg_type_number_t i=0;i<count;i++) {
         arm_thread_state64_t state={0}; mach_msg_type_number_t stateCount=ARM_THREAD_STATE64_COUNT;
         kern_return_t kr=thread_get_state(threads[i],ARM_THREAD_STATE64,(thread_state_t)&state,&stateCount);
@@ -384,6 +481,10 @@ void ng_set_arguments(const char *const *arguments, size_t count) {
         if (!arguments[i] || strlen(arguments[i])>4096) break;
         launch_arguments[launch_argument_count++]=strdup(arguments[i]);
     }
+}
+bool ng_set_custom_server(const char *key_hex, unsigned group, const char *portal) {
+    if (atomic_load(&initialization_attempted)) return false;
+    return cs_configure(key_hex,group,portal);
 }
 // Libraries a profile names beside the executable's own list; see ng_set_libraries.
 static char *launch_root, *launch_libraries[GL_MAX_LIBRARIES];
@@ -559,16 +660,17 @@ static void *guest_memmove_chk(void *d,const void *s,size_t n,size_t bound) {
 static void *guest_memset_chk(void *d,int c,size_t n,size_t bound) {
     if(n>bound) abort(); return guest_memset(d,c,n);
 }
+static bool trace_guest;   // --trace-guest; declared here for the log guards below
 static int guest_dladdr(const void *address, Dl_info *info) {
     // Libraries find their own file and header this way, as they would with dyld.
     const GuestLibrary *library=gl_library_at(&carried,(uint64_t)(uintptr_t)address);
     if (library) {
         *info = (Dl_info){.dli_fname=library->path,.dli_fbase=(void *)(uintptr_t)(library->image.header_address+library->slide)};
-        LOG("[native] dladdr(%p) -> %s base=%p\n",address,library->install_name,info->dli_fbase); return 1;
+        if (trace_guest) LOG("[native] dladdr(%p) -> %s base=%p\n",address,library->install_name,info->dli_fbase); return 1;
     }
     if (inside(address,1)) {
         *info = (Dl_info){.dli_fname=guest.path,.dli_fbase=guest.arena.executable};
-        LOG("[native] dladdr(%p) -> original image base=%p\n",address,info->dli_fbase); return 1;
+        if (trace_guest) LOG("[native] dladdr(%p) -> original image base=%p\n",address,info->dli_fbase); return 1;
     }
     return dladdr(address,info);
 }
@@ -714,7 +816,6 @@ static void guest_abort(void) __attribute__((noreturn));
 // Opt-in tracing (--trace-guest): the guest's failed file access, the
 // directories it creates and the environment variables it reads. Off by
 // default, and then the guest binds straight to libc for these.
-static bool trace_guest;
 static int guest_open(const char *, int, ...);
 static int guest_openat(int, const char *, int, ...);
 static int guest_stat(const char *, struct stat *);
@@ -735,7 +836,13 @@ static DIR *guest_opendir(const char *);
 static struct dirent *guest_readdir(DIR *);
 static int guest_socket(int, int, int);
 static int guest_connect(int, const struct sockaddr *, socklen_t);
+static int guest_connectx(int, const sa_endpoints_t *, sae_associd_t, unsigned int,
+                          const struct iovec *, unsigned int, size_t *, sae_connid_t *);
+static int guest_getaddrinfo(const char *, const char *, const struct addrinfo *, struct addrinfo **);
+static struct hostent *guest_gethostbyname(const char *);
 static int guest_getsockopt(int, int, int, void *, socklen_t *);
+static CTFontRef guest_ctfont_create(CFStringRef name, CGFloat size, const CGAffineTransform *matrix);
+static CTFontRef guest_ctfont_create_options(CFStringRef name, CGFloat size, const CGAffineTransform *matrix, CTFontOptions options);
 static int guest_setsockopt(int, int, int, const void *, socklen_t);
 static int guest_shutdown(int, int);
 static int guest_poll(struct pollfd *, nfds_t, int);
@@ -825,8 +932,15 @@ static void *hook(const char *name) {
         HOOK("realpath",guest_realpath); HOOK("realpath$DARWIN_EXTSN",guest_realpath_extsn);
         if (trace_guest) HOOK("readdir",guest_readdir);
     }
+    HOOK("connect",guest_connect); HOOK("connectx",guest_connectx);
+    HOOK("getaddrinfo",guest_getaddrinfo); HOOK("gethostbyname",guest_gethostbyname);
+    // The macOS client asks for Apple's Mac UI fonts. iOS does not have them,
+    // and CoreText silently substitutes Times New Roman, whose metrics the
+    // client's UI does not expect. Use the host's system font instead.
+    HOOK("CTFontCreateWithName",guest_ctfont_create);
+    HOOK("CTFontCreateWithNameAndOptions",guest_ctfont_create_options);
     if (trace_guest) { HOOK("mkdir",guest_mkdir); HOOK("getenv",guest_getenv);
-        HOOK("socket",guest_socket); HOOK("connect",guest_connect);
+        HOOK("socket",guest_socket);
         HOOK("getsockopt",guest_getsockopt); HOOK("setsockopt",guest_setsockopt);
         HOOK("shutdown",guest_shutdown); HOOK("poll",guest_poll);
         HOOK("sendto",guest_sendto); HOOK("recvfrom",guest_recvfrom);
@@ -860,6 +974,10 @@ static void *hook(const char *name) {
 // What this loader refuses or does not find is reported once by the guest's
 // dlerror, as dyld would; like dyld, each dlopen and dlsym starts without one.
 static _Thread_local char guest_dl_error[512];
+// Stand-in for the private libSystem signal trampoline the client's crash
+// handler looks up. It is only a marker for that handler; signal delivery uses
+// the host's own trampoline.
+__attribute__((noinline,used)) static void host_guest_sigtramp_stub(void) {}
 static void *guest_dlsym(void *handle, const char *name) {
     guest_dl_error[0]=0;
     void *value = name ? hook(name) : NULL;
@@ -883,7 +1001,16 @@ static void *guest_dlsym(void *handle, const char *name) {
     // Tracing reaches through the application's own libraries: what a placed
     // image exports is wrapped so each call logs its arguments and result.
     if (trace_guest && placed && value && inside(value,4)) value=gw_wrap(name,value);
-    LOG("[native] dlsym(%s) -> %p\n",name?name:"(null)",value); return value;
+    // The client crash handler resolves libSystem's private _sigtramp. The
+    // host does not export it; leaving the value NULL makes the handler retry
+    // forever and a crash becomes a lockup. A stub lets it finish its frame
+    // bookkeeping and report the crash instead.
+    if (!value && name && !strcmp(name,"_sigtramp")) {
+        static bool reported;
+        if (!reported) { reported=true; LOG("[native] dlsym(_sigtramp) is unavailable; returning a stub so the crash handler can finish\n"); }
+        value=(void *)&host_guest_sigtramp_stub;
+    }
+    if (trace_guest) LOG("[native] dlsym(%s) -> %p\n",name?name:"(null)",value); return value;
 }
 // Placed images stay for the life of the guest.
 static int guest_dlclose(void *handle) {
@@ -1205,6 +1332,7 @@ static int guest_socket(int domain, int type, int protocol) {
 static int guest_connect(int fd, const struct sockaddr *address, socklen_t size) {
     int result=connect(fd,address,size);
     int code=errno;
+    cs_note_connect(address);
     if (trace_guest && address) {
         char shown[1024]="?";
         if (address->sa_family==AF_UNIX && size>=sizeof(sa_family_t)) {
@@ -1218,6 +1346,49 @@ static int guest_connect(int fd, const struct sockaddr *address, socklen_t size)
         log_once("[native] [t%u] connect(%s) -> %d errno=%d\n",trace_tid(),shown,result,result?code:0);
     }
     return result;
+}
+// The game may connect through connectx() instead of connect(); both carry the
+// destination address the custom-server watcher compares with its portal.
+static int guest_connectx(int fd, const sa_endpoints_t *endpoints, sae_associd_t associd, unsigned int flags,
+                          const struct iovec *iov, unsigned int iovcnt, size_t *length, sae_connid_t *connid) {
+    int result=connectx(fd,endpoints,associd,flags,iov,iovcnt,length,connid);
+    int code=errno;
+    if (endpoints && endpoints->sae_dstaddr) cs_note_connect(endpoints->sae_dstaddr);
+    errno=code; return result;
+}
+// The portal is a hostname in WTF/Config.wtf; its lookup marks the login
+// attempt that makes the client build its certificate store.
+static int guest_getaddrinfo(const char *node, const char *service, const struct addrinfo *hints, struct addrinfo **result) {
+    int status=getaddrinfo(node,service,hints,result);
+    if (!status && node) cs_note_host(node);
+    return status;
+}
+static struct hostent *guest_gethostbyname(const char *name) {
+    struct hostent *result=gethostbyname(name);
+    if (result && name) cs_note_host(name);
+    return result;
+}
+// macOS names such as .SFCompact, .SFCompactText or .HelveticaNeue do not
+// exist on iOS. Mapping them to the host's UI font keeps the client's text
+// metrics in the same family instead of falling back to Times New Roman.
+static CFStringRef guest_font_name(CFStringRef name) {
+    if (!name) return name;
+    bool mac = CFStringHasPrefix(name, CFSTR(".SF")) ||
+        CFStringHasPrefix(name, CFSTR(".AppleSystemUIFont")) ||
+        CFStringHasPrefix(name, CFSTR(".HelveticaNeue"));
+    if (!mac) return name;
+    bool bold = CFStringFind(name, CFSTR("Bold"), 0).location != kCFNotFound;
+    bool italic = CFStringFind(name, CFSTR("Italic"), 0).location != kCFNotFound ||
+        CFStringFind(name, CFSTR("Oblique"), 0).location != kCFNotFound;
+    UIFont *font = bold ? [UIFont boldSystemFontOfSize:12] : [UIFont systemFontOfSize:12];
+    if (italic && !bold) font = [UIFont italicSystemFontOfSize:12];
+    return (__bridge CFStringRef)(font.fontName ?: @".AppleSystemUIFont");
+}
+static CTFontRef guest_ctfont_create(CFStringRef name, CGFloat size, const CGAffineTransform *matrix) {
+    return CTFontCreateWithName(guest_font_name(name),size,matrix);
+}
+static CTFontRef guest_ctfont_create_options(CFStringRef name, CGFloat size, const CGAffineTransform *matrix, CTFontOptions options) {
+    return CTFontCreateWithNameAndOptions(guest_font_name(name),size,matrix,options);
 }
 // What a non-blocking connect is followed by: polling and the error it ends in.
 static int guest_getsockopt(int fd, int level, int option, void *value, socklen_t *size) {
@@ -1354,6 +1525,7 @@ static ssize_t guest_recvfrom(int fd, void *bytes, size_t length, int flags, str
 // A crash on the guest's own pages reports no registers; when tracing, log
 // them before the system takes its report.
 static void guest_crash_registers(int signal_number, siginfo_t *info, void *uap) {
+    dump_guest_crash_state(signal_number,info,uap);
     ucontext_t *context=uap;
     arm_thread_state64_t state=context->uc_mcontext->__ss;
     LOG("[native] guest fault signal=%d pc=%016llx address=%p\n",signal_number,
@@ -1531,7 +1703,7 @@ static void *guest_dlopen(const char *path, int mode) {
     const GuestLibrary *caller=gl_library_at(&carried,(uint64_t)(uintptr_t)__builtin_return_address(0));
     size_t index;
     if (gl_placed(&carried,caller?&caller->image:&guest.image,caller?caller->path:guest.path,path,&index)) {
-        LOG("[native] dlopen(%s) -> placed %s\n",shown,index?carried.libraries[index-1].install_name:"executable");
+        if (trace_guest) LOG("[native] dlopen(%s) -> placed %s\n",shown,index?carried.libraries[index-1].install_name:"executable");
         return (void *)(uintptr_t)(GUEST_HANDLE_TAG|index|((mode&RTLD_FIRST)?GUEST_HANDLE_FIRST:0));
     }
     // A mapped library never falls back to the real one beside its adapter.
@@ -1539,14 +1711,14 @@ static void *guest_dlopen(const char *path, int mode) {
     if (target && !target.length) return refuse_dlopen(shown,"absent on this platform");
     if (target) {
         void *handle=dlopen(target.fileSystemRepresentation,mode);
-        LOG("[native] dlopen(%s) mapped to %s -> %p\n",shown,target.lastPathComponent.UTF8String,handle);
+        if (trace_guest) LOG("[native] dlopen(%s) mapped to %s -> %p\n",shown,target.lastPathComponent.UTF8String,handle);
         return handle;
     }
     // Original code inside the application folder is placed by this loader or
     // not at all: never handed to the host's dyld.
     if (gl_inside(&carried,path)) return refuse_dlopen(shown,"not a library this application carries; only its placed images open");
     void *handle=dlopen(path,mode);
-    LOG("[native] dlopen(%s) -> %p\n",shown,handle);
+    if (trace_guest) LOG("[native] dlopen(%s) -> %p\n",shown,handle);
     return handle;
 }
 // dlsym on a placed image: its own exports, then, unless it was opened
@@ -1807,7 +1979,8 @@ bool ng_initialize(const char *path, const char *frameworks, const char *library
     }
     trace_guest=[NSProcessInfo.processInfo.arguments containsObject:@"--trace-guest"];
     if (trace_guest) LOG("[native] tracing failed file access, created directories, getenv, sockets and the calls dlsym hands out (--trace-guest)\n");
-    if (trace_guest) {
+    prepare_guest_crash_dump();
+    if (trace_guest || guest_crash_dump_enabled) {
         struct sigaction crash_registers={0};
         crash_registers.sa_sigaction=guest_crash_registers;
         crash_registers.sa_flags=SA_SIGINFO|SA_RESETHAND;
@@ -1878,7 +2051,7 @@ bool ng_initialize(const char *path, const char *frameworks, const char *library
             LOG("[native] virtual-memory budget of %llu MB for large reservations (TOLKARA_VM_BUDGET_MB; experimental)\n",megabytes);
         }
     }
-    if([NSProcessInfo.processInfo.arguments containsObject:@"--sample-native"]) signal_log_fd=open([[NSHomeDirectory() stringByAppendingPathComponent:@"Documents/native-signal.log"] fileSystemRepresentation],O_WRONLY|O_CREAT|O_TRUNC,0600);
+    if(native_sample_requested()) signal_log_fd=open([[NSHomeDirectory() stringByAppendingPathComponent:@"Documents/native-signal.log"] fileSystemRepresentation],O_WRONLY|O_CREAT|O_TRUNC,0600);
     shader_wait_pending=dlsym(RTLD_DEFAULT,"AKShaderWaitPending");
     for (size_t i=0;i<carried.count;i++) {
         GuestLibrary *library=&carried.libraries[i];
@@ -1993,6 +2166,7 @@ bool ng_initialize(const char *path, const char *frameworks, const char *library
         if (guest.image.initializer_count) {
             ((void (*)(int,const char **,const char **,const char **))initializer)(argc,argv,env,apple);
             LOG("[native] first original initializer returned\n");
+            maybe_dump_guest_arena();
             startup_count(1);
         }
         ok=true;
@@ -2037,7 +2211,8 @@ bool ng_initialize(const char *path, const char *frameworks, const char *library
                 startup_count(i+1);
             }
             LOG("[native] all %llu initializers returned; entering original main=%p\n",(unsigned long long)guest.image.initializer_count,(void *)(guest.image.entry+guest.slide));
-            if([NSProcessInfo.processInfo.arguments containsObject:@"--sample-native"]) schedule_native_sample(mach_thread_self(),1);
+            if(native_sample_requested()) schedule_native_sample(mach_thread_self(),1);
+            cs_start();
             startup_begin("the app is running its own startup",0);
             int result=((int (*)(int,const char **,const char **,const char **))(guest.image.entry+guest.slide))(argc,argv,env,apple);
             LOG("[native] original main returned %d\n",result);
@@ -2045,6 +2220,7 @@ bool ng_initialize(const char *path, const char *frameworks, const char *library
         }
     }
 done:
+    cs_stop();
     LOG("[native] result %s=%s\n",full_startup?"startup_return":"first_initializer",ok?"PASS":"FAIL");
     // Retain live mappings and library handles: initializer-created pointers and
     // worker threads may outlive this call. Only one guest per app process.

@@ -25,6 +25,28 @@ def sha256(path):
     return digest.hexdigest()
 
 
+def validate_build_info(path):
+    """Refuse a source installation whose .build.info has no install key.
+
+    The client needs the key to validate its local data; a key-less row makes
+    it try to fetch a patch index, fail, and assert at the next start."""
+    try:
+        text=path.read_text(encoding='utf-8',errors='replace')
+    except OSError:
+        return
+    lines=[line for line in text.splitlines() if line.strip()]
+    if not lines: return
+    names=[column.split('!')[0] for column in lines[0].split('|')]
+    if 'Install Key' not in names:
+        raise RuntimeError(f'{path} has no Install Key column. Install and start the game once (or repair it) in Battle.net on this Mac, then copy again.')
+    index=names.index('Install Key')
+    for row in lines[1:]:
+        cells=row.split('|')
+        if index<len(cells) and len(cells[index])==32 and all(c in '0123456789abcdefABCDEF' for c in cells[index]):
+            return
+    raise RuntimeError(f'{path} has no row with an install key. Install and start the game once (or repair it) in Battle.net on this Mac, then copy again.')
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--device',default=localenv.load().get('DEVICE'),help='iPad UDID (default: DEVICE in local.env)')
@@ -48,6 +70,7 @@ def main():
             item=source/parent/name
             if item.is_file():
                 (stage/parent).mkdir(parents=True,exist_ok=True); shutil.copy2(item,stage/parent/name)
+    validate_build_info(stage/'.build.info')
     for name in ['Info.plist','PkgInfo']: shutil.copy2(source/app/name,stage/app/name)
     shutil.copytree(source/app/'Resources',stage/app/'Resources',dirs_exist_ok=True)
     before=sha256(source/executable)
